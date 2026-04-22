@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     tr.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
     tr.add_argument("--entry", "-e", action="append", help="指定起始/入口页面（如 UserSearch.jsp）")
+    tr.add_argument("--ignore", "-i", action="append", help="指定要忽略的页面或 Action 名（支持部分匹配）")
     tr.add_argument("--limit", "-l", type=int, default=0, help="限制显示的链路数量（0为不限制）")
     tr.add_argument(
         "--direction",
@@ -271,9 +272,9 @@ def cmd_trace(args) -> None:
     console.rule(f"[bold]🔍 开始{'逆向回溯' if args.direction == 'reverse' else '正向推演'}: {args.target}[/]")
 
     if args.direction == "reverse":
-        result = engine.trace_reverse(args.target, entries=args.entry)
+        result = engine.trace_reverse(args.target, entries=args.entry, ignore=args.ignore)
     else:
-        result = engine.trace_forward(args.target)
+        result = engine.trace_forward(args.target, ignore=args.ignore)
 
     # 限制显示数量
     if args.limit > 0:

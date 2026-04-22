@@ -32,34 +32,42 @@ class TracerEngine:
         self.graph = graph
         self.max_depth = max_depth
 
-    def trace_reverse(self, target_node: str, entries: List[str] = None) -> TraceResult:
+    def trace_reverse(self, target_node: str, entries: List[str] = None, ignore: List[str] = None) -> TraceResult:
         """逆向回溯：优先使用最短路径算法提升性能"""
         result = TraceResult(target_node, "reverse")
         target = self._resolve_target(target_node, result)
         if not target: return result
 
+        # 1. 准备过滤后的临时图谱
+        g_filtered = self.graph.g
+        if ignore:
+            ignore_lower = [i.lower() for i in ignore]
+            nodes_to_remove = [n for n in self.graph.g.nodes if any(i in n.lower() for i in ignore_lower) and n != target]
+            if nodes_to_remove:
+                g_filtered = self.graph.g.copy()
+                g_filtered.remove_nodes_from(nodes_to_remove)
+                result.warnings.append(f"已从图谱中屏蔽 {len(nodes_to_remove)} 个包含忽略关键字的节点。")
+
         all_found_paths = []
 
-        # 1. 尝试寻找从指定入口到目标的【最短路径】
+        # 2. 尝试寻找从指定入口到目标的【最短路径】
         if entries:
             for e in entries:
                 resolved_e = self.graph._resolve_node(e, is_jsp=True)
-                if self.graph.has_node(resolved_e):
+                if g_filtered.has_node(resolved_e):
                     try:
-                        # 使用 Dijkstra (BFS) 寻找最短路径，速度极快
-                        path = nx.shortest_path(self.graph.g, source=resolved_e, target=target)
+                        path = nx.shortest_path(g_filtered, source=resolved_e, target=target)
                         if len(path) <= self.max_depth:
                             all_found_paths.append(path)
                     except (nx.NetworkXNoPath, nx.NodeNotFound):
                         continue
 
-        # 2. 如果未指定入口或未找到路径，则从目标逆向 BFS 寻找最近的“根节点”
+        # 3. 如果未指定入口或未找到路径，则从目标逆向寻找最近的“根节点”
         if not all_found_paths:
-            # 找到图中所有的入口（入度为 0）
-            roots = [n for n in self.graph.g.nodes if self.graph.g.in_degree(n) == 0]
+            roots = [n for n in g_filtered.nodes if g_filtered.in_degree(n) == 0]
             for root in roots:
                 try:
-                    path = nx.shortest_path(self.graph.g, source=root, target=target)
+                    path = nx.shortest_path(g_filtered, source=root, target=target)
                     if len(path) <= self.max_depth:
                         all_found_paths.append(path)
                 except (nx.NetworkXNoPath, nx.NodeNotFound):
@@ -83,18 +91,29 @@ class TracerEngine:
 
         return result
 
-    def trace_forward(self, start_node: str) -> TraceResult:
+    def trace_forward(self, start_node: str, ignore: List[str] = None) -> TraceResult:
         """正向推演：使用最短路径寻找可达节点"""
         result = TraceResult(start_node, "forward")
         source = self._resolve_target(start_node, result)
         if not source: return result
 
+        # 1. 准备过滤后的临时图谱
+        g_filtered = self.graph.g
+        if ignore:
+            ignore_lower = [i.lower() for i in ignore]
+            nodes_to_remove = [n for n in self.graph.g.nodes if any(i in n.lower() for i in ignore_lower) and n != source]
+            if nodes_to_remove:
+                g_filtered = self.graph.g.copy()
+                g_filtered.remove_nodes_from(nodes_to_remove)
+                result.warnings.append(f"已屏蔽 {len(nodes_to_remove)} 个包含忽略关键字的节点。")
+
         # 寻找从 source 出发可达的所有 JSP 节点
         all_paths = []
         for node in self.graph._jsp_nodes:
             if node == source: continue
+            if not g_filtered.has_node(node): continue
             try:
-                path = nx.shortest_path(self.graph.g, source=source, target=node)
+                path = nx.shortest_path(g_filtered, source=source, target=node)
                 if len(path) <= self.max_depth:
                     all_paths.append(path)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
