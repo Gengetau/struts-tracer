@@ -75,15 +75,19 @@ def _build_graph(project_dir: str) -> RouteGraph:
         progress.update(task, description=f"发现 {len(config_paths)} 个配置, {len(xml_result.action_forwards)} 个 Action")
 
         # ── Phase 2: 源码扫描 ──
-        task2 = progress.add_task("扫描 JSP/JS/INC 源码 ...", total=None)
-        scan_result = scan_project(project_dir)
+        task2 = progress.add_task("正在扫描源码文件...", total=100)
+
+        def on_scan_progress(current, total):
+            progress.update(task2, total=total, completed=current, description=f"扫描 JSP/JS 源码 ({current}/{total})...")
+
+        scan_result = scan_project(project_dir, progress_callback=on_scan_progress)
 
         progress.update(
             task2,
             description=(
-                f"扫描 {scan_result.files_scanned} 个文件, "
-                f"提取 {scan_result.jump_relations} 条跳转, "
-                f"{scan_result.include_relations} 条 Include"
+                f"扫描完成: {scan_result.files_scanned} 文件, "
+                f"提取 {scan_result.jump_relations} 跳转, "
+                f"{scan_result.include_relations} Include"
             ),
         )
 

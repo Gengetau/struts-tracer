@@ -124,7 +124,7 @@ def _scan_file(
 
 # ─── 公开 API ───
 
-def scan_project(project_dir: str) -> ScanResult:
+def scan_project(project_dir: str, progress_callback=None) -> ScanResult:
     """
     扫描项目目录下所有 JSP / JS / INC 文件。
     针对大规模文件优化：先按后缀过滤、跳过无关目录、逐文件流式处理。
@@ -132,16 +132,19 @@ def scan_project(project_dir: str) -> ScanResult:
     result = ScanResult()
     project_dir = os.path.abspath(project_dir)
 
+    all_files = []
     for root, dirs, files in os.walk(project_dir, topdown=True):
-        # 剪枝：排除版本控制与构建目录
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-
         for fname in files:
             ext = os.path.splitext(fname)[1].lower()
-            if ext not in SCAN_EXTENSIONS:
-                continue
-            file_path = os.path.join(root, fname)
-            _scan_file(file_path, project_dir, result)
-            result.files_scanned += 1
+            if ext in SCAN_EXTENSIONS:
+                all_files.append(os.path.join(root, fname))
+
+    total = len(all_files)
+    for i, file_path in enumerate(all_files):
+        _scan_file(file_path, project_dir, result)
+        result.files_scanned += 1
+        if progress_callback:
+            progress_callback(i + 1, total)
 
     return result

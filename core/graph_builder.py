@@ -89,14 +89,7 @@ class RouteGraph:
     ) -> None:
         """
         递归处理 Include 关系：父 JSP 自动继承子 JSP 的所有跳转能力。
-
-        算法：
-        1. 构建 include 子图（parent → child）
-        2. 检测 include 环路并断开
-        3. 对每个 parent，递归收集其所有后代（含间接 include）的出边
-        4. 将后代出边复刻到 parent（类型标记为 inherited）
         """
-        # 构建 include 子图并检测环路
         inc_graph = nx.DiGraph()
         for parent, children in include_map.items():
             self._jsp_nodes.add(parent)
@@ -106,31 +99,21 @@ class RouteGraph:
                 self.g.add_edge(parent, child, type=EDGE_INCLUDE)
                 stats["include_edges"] += 1
 
-        # 环路检测与断开
-        cycles_detected: List[List[str]] = []
-        try:
-            cycles = nx.simple_cycles(inc_graph)
-            for cycle in cycles:
-                cycles_detected.append(cycle)
-                # 断开环中最后一条边
-                if len(cycle) >= 2:
-                    u, v = cycle[-1], cycle[0]
-                    if inc_graph.has_edge(u, v):
-                        inc_graph.remove_edge(u, v)
-                        if self.g.has_edge(u, v) and self.g[u][v].get("type") == EDGE_INCLUDE:
-                            self.g.remove_edge(u, v)
-                            stats["include_edges"] -= 1
-        except Exception:
-            pass
-
         # 递归继承：每个 parent 继承所有 descendant 的出边
         inherited = 0
-        visited_sets: Dict[str, Set[str]] = {}  # 缓存: jsp -> 它的所有 include 后代
+        visited_sets: Dict[str, Set[str]] = {}
 
-        for parent in include_map:
-            descendants = self._collect_include_descendants(
-                parent, inc_graph, visited_sets, set()
-            )
+        # 1700 JSP 规模，直接使用 transitive_closure 可能太慢，
+        # 我们对每个节点进行有限深度的 DFS 收集。
+        for parent in list(include_map.keys()):
+            # 找到该 parent 所有可达的子 JSP (transitive)
+            # 使用 networkx 内置的 descendants 效率更高且自带环路处理
+            try:
+                descendants = nx.descendants(inc_graph, parent)
+            except Exception:
+                # 若图逻辑异常，回退到手动收集
+                descendants = self._collect_include_descendants(parent, inc_graph, visited_sets, set())
+            
             for desc in descendants:
                 # desc 的出边（跳转到 Action 的边）→ 复刻到 parent
                 for _, target, data in self.g.out_edges(desc, data=True):
@@ -139,7 +122,7 @@ class RouteGraph:
                         inherited += 1
 
         stats["inherited_edges"] = inherited
-        stats["cycles_broken"] = len(cycles_detected)
+        stats["cycles_broken"] = 0  # networkx.descendants 自动处理环路，无需手动断开
 
     def _collect_include_descendants(
         self,
