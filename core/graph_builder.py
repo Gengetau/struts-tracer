@@ -1,6 +1,6 @@
 """
-graph_builder.py — 构建有向图
-支持节点路径融合与递归 Include 继承。
+graph_builder.py — 构建逻辑有向图
+核心策略：对 Action 采用不区分大小写的匹配，对 JSP 采用路径对齐，并建立包含引用边。
 """
 
 from __future__ import annotations
@@ -8,16 +8,19 @@ from typing import Dict, List, Set
 import networkx as nx
 from parser.xml_parser import ParseResult
 from parser.source_scanner import ScanResult
+from utils.regex_rules import RE_DO_SUFFIX
 
-EDGE_JUMP = "jump"
-EDGE_FORWARD = "forward"
-EDGE_INCLUDE = "include"
+EDGE_JUMP = "jump"        # 源码跳转 (JSP/JS -> Action/JSP)
+EDGE_FORWARD = "forward"  # 配置文件 (Action -> JSP)
+EDGE_INCLUDE = "include"  # 引用关系 (JSP -> JS/JSP)
 
 class RouteGraph:
     def __init__(self) -> None:
         self.g = nx.DiGraph()
         self._jsp_nodes: Set[str] = set()
         self._action_nodes: Set[str] = set()
+        # 映射：不区分大小写的路径 -> 实际出现在文件系统/配置中的第一个路径
+        self._case_map: Dict[str, str] = {}
 
     def build(self, xml_result: ParseResult, scan_result: ScanResult) -> Dict[str, int]:
         stats = {
@@ -25,95 +28,84 @@ class RouteGraph:
             "forward_edges": 0, "include_edges": 0, "inherited_edges": 0,
         }
 
-        # 1. 预载所有扫描到的 JSP 节点
-        for jsp in scan_result.jump_map: self._jsp_nodes.add(jsp)
-        for jsp in scan_result.include_map: self._jsp_nodes.add(jsp)
+        # 1. 注册所有扫描到的文件节点
+        all_files = set(scan_result.jump_map.keys()) | set(scan_result.include_map.keys())
+        for f in all_files: self._register_node(f, is_jsp=True)
 
-        # 2. 建立 Include/Script 依赖关系 (JSP -> Included JSP/JS)
-        self._inject_dependencies(scan_result.include_map, stats)
+        # 2. 建立包含关系边 (JSP -> Included JSP/JS)
+        for parent, children in scan_result.include_map.items():
+            u = self._register_node(parent, is_jsp=True)
+            for child in children:
+                v = self._resolve_node(child, hint_jsp=True)
+                self.g.add_edge(u, v, type=EDGE_INCLUDE)
+                stats["include_edges"] += 1
 
-        # 3. Action -> JSP (XML Forward)
-        for action, targets in xml_result.action_forwards.items():
-            self._action_nodes.add(action)
-            for xml_jsp in targets:
-                real_jsp = self._resolve_jsp_node(xml_jsp)
-                self._jsp_nodes.add(real_jsp)
-                self.g.add_edge(action, real_jsp, type=EDGE_FORWARD)
-                stats["forward_edges"] += 1
-
-        # 4. Global Forwards
-        for fwd_name, xml_jsp in xml_result.global_forwards.items():
-            node_key = f"/GlobalForward:{fwd_name}"
-            self._action_nodes.add(node_key)
-            real_jsp = self._resolve_jsp_node(xml_jsp)
-            self._jsp_nodes.add(real_jsp)
-            self.g.add_edge(node_key, real_jsp, type=EDGE_FORWARD)
-            stats["forward_edges"] += 1
-
-        # 5. JSP/JS -> Target (Source Jump)
-        for src_file, targets in scan_result.jump_map.items():
-            self._jsp_nodes.add(src_file) 
-            for target in targets:
-                if target.lower().endswith(".jsp"):
-                    real_target = self._resolve_jsp_node(target)
-                    self.g.add_edge(src_file, real_target, type=EDGE_JUMP)
+        # 3. 建立源码跳转边 (JSP/JS -> Target)
+        for src, targets in scan_result.jump_map.items():
+            u = self._register_node(src, is_jsp=True)
+            for raw_target in targets:
+                # 判断目标是 Action 还是 JSP
+                if raw_target.lower().endswith(".jsp"):
+                    v = self._resolve_node(raw_target, hint_jsp=True)
                 else:
-                    self._action_nodes.add(target)
-                    self.g.add_edge(src_file, target, type=EDGE_JUMP)
+                    v = self._resolve_node(raw_target, hint_jsp=False)
+                self.g.add_edge(u, v, type=EDGE_JUMP)
                 stats["jump_edges"] += 1
 
-        # 6. 递归继承注入
-        self._inject_inheritance(stats)
+        # 4. 建立 XML Forward 边 (Action -> JSP)
+        for action, targets in xml_result.action_forwards.items():
+            u = self._resolve_node(action, hint_jsp=False)
+            for target in targets:
+                v = self._resolve_node(target, hint_jsp=True)
+                self.g.add_edge(u, v, type=EDGE_FORWARD)
+                stats["forward_edges"] += 1
 
+        # 5. 全局 Forward
+        for fwd, target in xml_result.global_forwards.items():
+            u = self._resolve_node(f"/GlobalForward:{fwd}", hint_jsp=False)
+            v = self._resolve_node(target, hint_jsp=True)
+            self.g.add_edge(u, v, type=EDGE_FORWARD)
+            stats["forward_edges"] += 1
+
+        # 6. 注入继承边 (优化：不仅继承 Jump，还帮助回溯)
+        # 我们不再单独注入大量继承边，而是让回溯引擎具备穿透 Include 的能力
+        
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
         return stats
 
-    def _resolve_jsp_node(self, path: str) -> str:
-        """路径融合逻辑：处理大小写与相对路径差异"""
-        if path in self._jsp_nodes: return path
+    def _register_node(self, path: str, is_jsp: bool) -> str:
+        """注册节点并维护大小写映射"""
+        if is_jsp: self._jsp_nodes.add(path)
+        else: self._action_nodes.add(path)
         
-        # 尝试忽略大小写匹配
-        path_lower = path.lower()
-        for node in self._jsp_nodes:
-            if node.lower() == path_lower: return node
-            
-        # 后缀匹配 (e.g. /Login.jsp -> /docroot/jsp/Login.jsp)
-        candidates = [n for n in self._jsp_nodes if n.endswith(path) or n.lower().endswith(path_lower)]
-        if candidates: return min(candidates, key=len)
-            
+        key = path.lower()
+        if key not in self._case_map:
+            self._case_map[key] = path
         return path
 
-    def _inject_dependencies(self, include_map: Dict[str, List[str]], stats: Dict[str, int]) -> None:
-        """建立基础依赖边"""
-        for parent, children in include_map.items():
-            p_node = self._resolve_jsp_node(parent)
-            self._jsp_nodes.add(p_node)
-            for child in children:
-                c_node = self._resolve_jsp_node(child)
-                self._jsp_nodes.add(c_node)
-                self.g.add_edge(p_node, c_node, type=EDGE_INCLUDE)
-                stats["include_edges"] += 1
-
-    def _inject_inheritance(self, stats: Dict[str, int]) -> None:
-        """递归继承注入：如果 A 引用了 B，且 B 有出边到 C，则建立 A 到 C 的虚拟边"""
-        dep_graph = nx.DiGraph()
-        for u, v, data in self.g.edges(data=True):
-            if data.get("type") == EDGE_INCLUDE:
-                dep_graph.add_edge(u, v)
-
-        inherited = 0
-        for parent in list(dep_graph.nodes):
-            try:
-                descendants = nx.descendants(dep_graph, parent)
-            except Exception: continue
-            
-            for desc in descendants:
-                for _, target, data in list(self.g.out_edges(desc, data=True)):
-                    if data.get("type") == EDGE_JUMP and not self.g.has_edge(parent, target):
-                        self.g.add_edge(parent, target, type="inherited")
-                        inherited += 1
-        stats["inherited_edges"] = inherited
+    def _resolve_node(self, raw_path: str, hint_jsp: bool) -> str:
+        """对齐路径，处理大小写不敏感匹配"""
+        # 规范化：如果是 Action，去掉 .do
+        p = RE_DO_SUFFIX.sub("", raw_path)
+        if not p.startswith("/"): p = "/" + p
+        
+        # 1. 精确匹配
+        if p in self._jsp_nodes or p in self._action_nodes: return p
+        
+        # 2. 大小写不敏感匹配
+        key = p.lower()
+        if key in self._case_map:
+            return self._case_map[key]
+        
+        # 3. 后缀匹配 (仅针对 JSP)
+        if hint_jsp or p.lower().endswith(".jsp"):
+            for node in self._jsp_nodes:
+                if node.lower().endswith(key):
+                    return node
+        
+        # 4. 新建 Action 节点
+        return self._register_node(p, is_jsp=False)
 
     def is_jsp(self, node: str) -> bool: return node in self._jsp_nodes
     def is_action(self, node: str) -> bool: return node in self._action_nodes
