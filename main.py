@@ -112,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--target", "-t", required=True, help="目标页面名（支持模糊匹配）")
     tr.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     tr.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
-    tr.add_argument("--entry", "-e", action="append", help="指定起始/入口页面（如 UserSearch.jsp），将高亮显示以此结尾的链路")
+    tr.add_argument("--entry", "-e", action="append", help="指定起始/入口页面（如 UserSearch.jsp）")
+    tr.add_argument("--limit", "-l", type=int, default=0, help="限制显示的链路数量（0为不限制）")
     tr.add_argument(
         "--direction",
         choices=["reverse", "forward"],
@@ -270,28 +271,13 @@ def cmd_trace(args) -> None:
     console.rule(f"[bold]🔍 开始{'逆向回溯' if args.direction == 'reverse' else '正向推演'}: {args.target}[/]")
 
     if args.direction == "reverse":
-        result = engine.trace_reverse(args.target)
+        result = engine.trace_reverse(args.target, entries=args.entry)
     else:
         result = engine.trace_forward(args.target)
 
-    # 如果指定了入口页面，进行过滤/标记
-    if args.entry and result.paths:
-        entries = [e.lower() for e in args.entry]
-        highlighted_paths = []
-        other_paths = []
-        for tp in result.paths:
-            # 检查链路起点是否包含指定的入口名
-            start_node = tp.nodes[0].lower()
-            if any(e in start_node for e in entries):
-                highlighted_paths.append(tp)
-            else:
-                other_paths.append(tp)
-        
-        if highlighted_paths:
-            console.print(f"[bold green]✨ 发现 {len(highlighted_paths)} 条通往指定入口的优质链路：[/]")
-            result.paths = highlighted_paths + other_paths
-        else:
-            console.print(f"[dim yellow]⚠ 未发现直接通往指定入口 {args.entry} 的链路，显示全量结果。[/]")
+    # 限制显示数量
+    if args.limit > 0:
+        result.paths = result.paths[:args.limit]
 
     _render_paths(result, args.target)
 

@@ -50,20 +50,30 @@ def _scan_file(file_path: str, project_dir: str, result: ScanResult) -> None:
 
     # 1. 跳转提取
     jumps: Set[str] = set()
+    includes: Set[str] = set()
+    
     for regex, _ in SOURCE_RULES:
         for m in regex.finditer(content):
-            url = _normalize_path(m.group(1), parent_dir, project_dir)
-            if url and url != src_key: jumps.add(url)
+            raw_url = m.group(1)
+            url = _normalize_path(raw_url, parent_dir, project_dir)
+            if not url or url == src_key: continue
+            
+            # 如果是 JSP 引用了 JS 文件，归类为 Include
+            if src_key.lower().endswith(".jsp") and url.lower().endswith(".js"):
+                includes.add(url)
+            else:
+                jumps.add(url)
+
     if jumps:
         result.jump_map[src_key] = list(jumps)
         result.jump_relations += len(jumps)
 
-    # 2. 引用提取 (Include/Script)
-    includes: Set[str] = set()
+    # 2. 显式引用提取 (Include/Script Tags)
     for regex, _ in INCLUDE_RULES:
         for m in regex.finditer(content):
             url = _normalize_path(m.group(1), parent_dir, project_dir)
             if url and url != src_key: includes.add(url)
+            
     if includes:
         result.include_map[src_key] = list(includes)
         result.include_relations += len(includes)
