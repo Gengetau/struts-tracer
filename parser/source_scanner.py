@@ -1,6 +1,6 @@
 """
-source_scanner.py — 正则扫描 JSP / JS / INC 文件
-提取跳转关系与 Include 依赖，优化 1700+ 文件规模。
+source_scanner.py — 正则扫描源代码文件
+提取跳转与 Include 关系，支持路径规范化与大小写保持。
 """
 
 from __future__ import annotations
@@ -22,35 +22,45 @@ from utils.regex_rules import (
 # ─── 数据结构 ───
 
 class ScanResult:
-    """源码扫描结果容器"""
-
     def __init__(self) -> None:
-        # source_jsp -> [action_paths]
         self.jump_map: Dict[str, List[str]] = {}
-        # parent_jsp -> [included_jsp]  (Include 关系，用于图注入)
         self.include_map: Dict[str, List[str]] = {}
-        # 扫描文件计数
         self.files_scanned: int = 0
         self.jump_relations: int = 0
         self.include_relations: int = 0
 
 
-def _normalize_action(raw: str) -> str:
-    """提取到的 action 字符串规范化：截断参数、去 .do 后缀、加 / 前缀、转小写"""
-    p = raw.strip()
-    # 1. 截断查询参数
-    p = p.split('?')[0].split('#')[0]
-    # 2. 去除 .do 后缀
+def _normalize_path_logic(raw: str, parent_dir: str, project_dir: str) -> str:
+    """
+    统一路径处理逻辑：
+    1. 剥离查询参数
+    2. 如果是 .do，去后缀
+    3. 如果是相对路径，基于 parent_dir 转换为项目相对绝对路径
+    4. 确保以 / 开头
+    """
+    # 1. 剥离参数
+    p = raw.strip().split('?')[0].split('#')[0]
+    if not p:
+        return ""
+
+    # 2. .do 处理
     p = RE_DO_SUFFIX.sub("", p)
-    # 3. 确保以 / 开头
+
+    # 3. 相对路径转绝对项目路径
+    if not p.startswith("/"):
+        # 计算 OS 绝对路径
+        abs_os_path = os.path.normpath(os.path.join(parent_dir, p))
+        # 转回项目相对路径
+        p = _to_project_path(abs_os_path, project_dir)
+    
     if not p.startswith("/"):
         p = "/" + p
-    # 4. 转小写以应对大小写不敏感环境
-    return p.lower()
+        
+    return p
 
 
 def _to_project_path(file_path: str, project_dir: str) -> str:
-    """将绝对文件路径转换为项目相对 JSP 路径（/jsp/xxx.jsp 格式），转小写"""
+    """转换为项目相对路径（保持大小写）"""
     try:
         rel = os.path.relpath(file_path, project_dir)
     except ValueError:
@@ -58,22 +68,7 @@ def _to_project_path(file_path: str, project_dir: str) -> str:
     rel = rel.replace(os.sep, "/")
     if not rel.startswith("/"):
         rel = "/" + rel
-    return rel.lower()
-
-
-def _normalize_include_path(raw: str, parent_dir: str, project_dir: str) -> str:
-    """
-    Include 路径可能是绝对 (/jsp/Header.jsp) 或相对 (../Header.jsp)。
-    统一转为项目相对绝对路径格式（/jsp/xxx.jsp）。
-    """
-    p = raw.strip()
-    if p.startswith("/"):
-        # 已经是项目绝对路径格式
-        return p
-    # 相对路径：基于 parent 文件目录解析出绝对 OS 路径
-    abs_path = os.path.abspath(os.path.join(parent_dir, p))
-    # 转换为项目相对路径
-    return _to_project_path(abs_path, project_dir)
+    return rel
 
 
 def _scan_file(
@@ -81,7 +76,6 @@ def _scan_file(
     project_dir: str,
     result: ScanResult,
 ) -> None:
-    """扫描单个文件，提取跳转与 Include 关系"""
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
@@ -92,29 +86,29 @@ def _scan_file(
     parent_dir = os.path.dirname(file_path)
 
     # ── 跳转提取 ──
-    actions: Set[str] = set()
+    targets: Set[str] = set()
     for regex, _desc in SOURCE_RULES:
         for m in regex.finditer(content):
-            raw_action = m.group(1)
-            action = _normalize_action(raw_action)
-            if action:
-                actions.add(action)
+            raw_url = m.group(1)
+            norm_url = _normalize_path_logic(raw_url, parent_dir, project_dir)
+            if norm_url and norm_url != src_key:
+                targets.add(norm_url)
 
-    if actions:
+    if targets:
         existing = result.jump_map.setdefault(src_key, [])
-        for a in actions:
-            if a not in existing:
-                existing.append(a)
-        result.jump_relations += len(actions)
+        for t in targets:
+            if t not in existing:
+                existing.append(t)
+        result.jump_relations += len(targets)
 
     # ── Include 提取 ──
     includes: Set[str] = set()
     for regex, _desc in INCLUDE_RULES:
         for m in regex.finditer(content):
             raw_inc = m.group(1)
-            inc_path = _normalize_include_path(raw_inc, parent_dir, project_dir)
-            if inc_path:
-                includes.add(inc_path)
+            norm_inc = _normalize_path_logic(raw_inc, parent_dir, project_dir)
+            if norm_inc and norm_inc != src_key:
+                includes.add(norm_inc)
 
     if includes:
         existing = result.include_map.setdefault(src_key, [])
@@ -124,13 +118,7 @@ def _scan_file(
         result.include_relations += len(includes)
 
 
-# ─── 公开 API ───
-
 def scan_project(project_dir: str, progress_callback=None) -> ScanResult:
-    """
-    扫描项目目录下所有 JSP / JS / INC 文件。
-    针对大规模文件优化：先按后缀过滤、跳过无关目录、逐文件流式处理。
-    """
     result = ScanResult()
     project_dir = os.path.abspath(project_dir)
 

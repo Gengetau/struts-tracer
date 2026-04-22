@@ -1,11 +1,11 @@
 """
 regex_rules.py — 正则表达式集中管理
-覆盖 Struts 1.x 遗留系统所有常见跳转写法，含动态路径拼接处理。
+覆盖 Struts 1.x 遗留系统所有常见跳转写法，包含动态路径拼接与自定义标签。
 """
 
 import re
 
-# ─── 跳过目录（扫描时排除） ───
+# ─── 跳过目录 ───
 SKIP_DIRS: frozenset = frozenset({
     ".svn", ".git", "__pycache__", "node_modules",
     ".idea", ".vscode", "target", "build", "dist",
@@ -22,92 +22,42 @@ RE_DO_SUFFIX = re.compile(r"\.do$", re.IGNORECASE)
 
 
 # ──────────────────────────────────────────────
-#  JSP / JS / INC 源码跳转提取规则
+#  JSP / JS / INC 源码跳转提取规则 (针对 Action 和 JSP)
 # ──────────────────────────────────────────────
 
-# 1. 广谱 Struts 标签捕获: <html:XXX action="..." > 或 property="..."
-#    覆盖 link, form, rewrite, button, submit 等
-RE_STRUTS_TAG_ACTION = re.compile(
-    r"""<(?:html|bean|logic):\w+\s+[^>]*(?:action|property|forward|href|page)\s*=\s*["']/?([^"']+?)["']""",
+# 核心捕获逻辑：抓取引号内的路径字符串
+# 重点抓取：1. 以 / 开头的路径  2. 包含 .do 或 .jsp 的路径
+RE_URL_PATTERN = r"""["']((?:/[^"']+?)|(?:[^"']+?\.(?:do|jsp|inc|html|htm)(?:[^"']*)))["']"""
+
+# 1. 广谱标签捕获 (Struts & HTML)
+# <html:form action="...">, <a href="...">, <patlics:frame src="...">
+RE_TAG_URL = re.compile(
+    r"""<(?:html|bean|logic|patlics|form|a|frame|iframe|script)\s+[^>]*(?:action|property|forward|href|page|src|url|path)\s*=\s*""" + RE_URL_PATTERN,
     re.IGNORECASE,
 )
 
-# 2. 标准 HTML 标签捕获: <form action="...">, <a href="...">
-#    侧重于捕获带 .do 的跳转
-RE_HTML_JUMP = re.compile(
-    r"""<(?:form|a|frame|iframe)\s+[^>]*(?:action|href|src)\s*=\s*["']/?([^"']+?)["']""",
-    re.IGNORECASE,
-)
-
-# 3. 自定义内联标签捕获: <patlics:frame src="..." />
-#    针对特定项目的非标准内联组件
-RE_CUSTOM_FRAME_JUMP = re.compile(
-    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["']/?([^"']+?)["']""",
-    re.IGNORECASE,
-)
-
-# 4. JavaScript 字符串字面量中的 .do 捕获
-#    覆盖 submitForm(..., '/XXX.do'), window.open('/XXX.do'), location = 'XXX.do'
-RE_JS_DO_LITERAL = re.compile(
-    r"""["']/?([^"']+?\.do(?:[^"']*)?)["']""",
-    re.IGNORECASE,
-)
-
-# 5. JS 动态路径拼接增强型捕获
-RE_JS_CONCAT_ACTION = re.compile(
-    r"""(?:[A-Za-z_]\w*\s*\+\s*)?["']/?([^"']+?\.do[^"']*)["']""",
-    re.IGNORECASE,
-)
-
-# 6. 特殊：针对特定跳转函数的捕获
-RE_JS_FUNC_CALL = re.compile(
-    r"""(?:submit|jump|go|open|call|send|request)(?:To|Page|Form)?\s*\([^,]*?,\s*["']/?([^"']+?)["']""",
-    re.IGNORECASE,
-)
+# 2. JavaScript 中的路径字面量
+# 针对 location = '...', window.open(...), submitForm(..., '...')
+# 我们在源码中寻找一切引号包裹的、符合 URL 特征的字符串
+RE_JS_URL = re.compile(RE_URL_PATTERN, re.IGNORECASE)
 
 # ─── 汇总：按优先级依次执行的规则列表 ───
 SOURCE_RULES: list[tuple[re.Pattern, str]] = [
-    (RE_STRUTS_TAG_ACTION, "struts tag"),
-    (RE_HTML_JUMP, "html tag"),
-    (RE_CUSTOM_FRAME_JUMP, "custom patlics tag"),
-    (RE_JS_DO_LITERAL, "js literal"),
-    (RE_JS_CONCAT_ACTION, "js concat"),
-    (RE_JS_FUNC_CALL, "js func"),
+    (RE_TAG_URL, "tag attribute url"),
+    (RE_JS_URL, "generic string literal url"),
 ]
 
 
 # ──────────────────────────────────────────────
-#  JSP Include / Script 引用规则（递归注入）
+#  Include 规则（专门用于建立依赖关系）
 # ──────────────────────────────────────────────
 
-# 1. <jsp:include page="/XXX.jsp" />
-RE_JSP_INCLUDE = re.compile(
-    r"""<jsp:include\s+[^>]*page\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
+# <jsp:include page="..." />, <%@ include file="..." />, <patlics:frame page="..." />
+RE_INCLUDE = re.compile(
+    r"""<(?:jsp:include|patlics:frame|%@\s*include)\s+[^>]*(?:page|file|src)\s*=\s*""" + RE_URL_PATTERN,
     re.IGNORECASE,
 )
 
-# 2. <%@ include file="/XXX.jsp" %>
-RE_INCLUDE_DIRECTIVE = re.compile(
-    r"""<%@\s*include\s+file\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
-    re.IGNORECASE,
-)
-
-# 3. <patlics:frame src="..." /> 指向 JSP 的情况
-RE_CUSTOM_FRAME_INCLUDE = re.compile(
-    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
-    re.IGNORECASE,
-)
-
-# 4. <script src="..."> 引用 JS 文件
-RE_SCRIPT_SRC = re.compile(
-    r"""<script\s+[^>]*src\s*=\s*["'](/?[^"']+?\.js(?:[^"']*)?)["']""",
-    re.IGNORECASE,
-)
-
-# ─── 汇总 ───
 INCLUDE_RULES: list[tuple[re.Pattern, str]] = [
-    (RE_JSP_INCLUDE, "jsp:include"),
-    (RE_INCLUDE_DIRECTIVE, "directive"),
-    (RE_CUSTOM_FRAME_INCLUDE, "patlics frame"),
-    (RE_SCRIPT_SRC, "script src"),
+    (RE_INCLUDE, "include/frame dependency"),
 ]
