@@ -339,18 +339,41 @@ def cmd_check(args) -> None:
     from parser.source_scanner import _scan_file, ScanResult
     
     project_dir = _get_project_dir(args.dir)
-    file_path = args.file
-    if not os.path.isabs(file_path):
-        file_path = os.path.join(project_dir, file_path)
+    file_input = args.file
     
-    if not os.path.exists(file_path):
-        console.print(f"[red]✗ 文件不存在: {file_path}[/]")
-        return
+    # 1. 尝试直接路径定位
+    target_path = file_input
+    if not os.path.isabs(target_path):
+        target_path = os.path.abspath(os.path.join(project_dir, target_path))
+    
+    # 2. 如果直接定位失败，尝试在项目目录下全域搜寻文件名
+    if not os.path.exists(target_path):
+        console.print(f"[dim yellow]⚠ 直接定位失败，正在项目全域搜寻: {file_input}...[/]")
+        found_files = []
+        filename_to_find = os.path.basename(file_input)
+        for root, dirs, files in os.walk(project_dir):
+            # 剪枝跳过无关目录
+            from utils.regex_rules import SKIP_DIRS
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            
+            if filename_to_find in files:
+                found_files.append(os.path.join(root, filename_to_find))
+        
+        if not found_files:
+            console.print(f"[red]✗ 在项目目录中未找到该文件: {file_input}[/]")
+            return
+        
+        if len(found_files) > 1:
+            console.print(f"[yellow]⚠ 发现多个候选文件，选择第一个:[/]")
+            for f in found_files:
+                console.print(f"  [cyan]• {f}[/]")
+        
+        target_path = found_files[0]
 
-    console.print(Panel(f"正在诊断文件: [bold cyan]{file_path}[/]", title="[bold]🛠️ 提取器调试[/]"))
+    console.print(Panel(f"诊断文件: [bold cyan]{target_path}[/]\n项目根目录: [dim]{project_dir}[/]", title="[bold]🛠️ 提取器调试[/]"))
     
     res = ScanResult()
-    _scan_file(file_path, project_dir, res)
+    _scan_file(target_path, project_dir, res)
     
     table = Table(title="提取到的关系")
     table.add_column("类型", style="magenta")
