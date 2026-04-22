@@ -9,6 +9,7 @@ import os
 import sys
 import time
 
+import networkx as nx
 from rich.console import Console
 from rich.panel import Panel
 from rich.tree import Tree
