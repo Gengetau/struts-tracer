@@ -37,21 +37,20 @@ class ParseResult:
 # ─── 内部辅助 ───
 
 def _normalize_path(raw: str | None) -> str | None:
-    """将 XML 中的 path 规范化：去除 .do 后缀、确保以 / 开头"""
+    """将 XML 中的 path 规范化：去除 .do 后缀、确保以 / 开头、转小写"""
     if not raw:
         return None
     p = raw.strip()
     if not p:
         return None
-    # action path 可能带 .do
     p = RE_DO_SUFFIX.sub("", p)
     if not p.startswith("/"):
         p = "/" + p
-    return p
+    return p.lower()
 
 
 def _normalize_jsp(raw: str | None) -> str | None:
-    """JSP 路径规范化：确保以 / 开头，保留 .jsp 后缀"""
+    """JSP 路径规范化：确保以 / 开头、保留 .jsp 后缀、转小写"""
     if not raw:
         return None
     p = raw.strip()
@@ -59,7 +58,7 @@ def _normalize_jsp(raw: str | None) -> str | None:
         return None
     if not p.startswith("/"):
         p = "/" + p
-    return p
+    return p.lower()
 
 
 def _parse_single_config(xml_path: str, result: ParseResult) -> int:

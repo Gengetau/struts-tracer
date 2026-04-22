@@ -36,30 +36,29 @@ class ScanResult:
 
 
 def _normalize_action(raw: str) -> str:
-    """提取到的 action 字符串规范化：截断参数、去 .do 后缀、加 / 前缀"""
+    """提取到的 action 字符串规范化：截断参数、去 .do 后缀、加 / 前缀、转小写"""
     p = raw.strip()
-    # 1. 截断查询参数 (e.g., /Search.do?id=1 -> /Search.do)
+    # 1. 截断查询参数
     p = p.split('?')[0].split('#')[0]
     # 2. 去除 .do 后缀
     p = RE_DO_SUFFIX.sub("", p)
     # 3. 确保以 / 开头
     if not p.startswith("/"):
         p = "/" + p
-    return p
+    # 4. 转小写以应对大小写不敏感环境
+    return p.lower()
 
 
 def _to_project_path(file_path: str, project_dir: str) -> str:
-    """将绝对文件路径转换为项目相对 JSP 路径（/jsp/xxx.jsp 格式）"""
+    """将绝对文件路径转换为项目相对 JSP 路径（/jsp/xxx.jsp 格式），转小写"""
     try:
         rel = os.path.relpath(file_path, project_dir)
     except ValueError:
-        # 不同驱动器 (Windows)，回退
         rel = file_path
-    # 统一分隔符
     rel = rel.replace(os.sep, "/")
     if not rel.startswith("/"):
         rel = "/" + rel
-    return rel
+    return rel.lower()
 
 
 def _normalize_include_path(raw: str, parent_dir: str, project_dir: str) -> str:

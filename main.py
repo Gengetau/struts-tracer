@@ -125,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     st.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
 
+    # check 子命令
+    ck = sub.add_parser("check", help="调试：查看特定文件的跳转提取结果")
+    ck.add_argument("--file", "-f", required=True, help="要检查的 JSP/JS 文件路径（相对或绝对）")
+    ck.add_argument("--dir", "-d", required=False, help="项目根目录路径")
+
     # search 子命令
     se = sub.add_parser("search", help="模糊搜索节点")
     se.add_argument("--dir", "-d", required=False, help="项目根目录路径")
@@ -323,6 +328,39 @@ def cmd_search(args) -> None:
         console.print(f"  [{color}][{tag}] {m}[/{color}]")
 
 
+def cmd_check(args) -> None:
+    """调试命令：直接输出单个文件的正则匹配结果"""
+    from parser.source_scanner import _scan_file, ScanResult
+    
+    project_dir = _get_project_dir(args.dir)
+    file_path = args.file
+    if not os.path.isabs(file_path):
+        file_path = os.path.join(project_dir, file_path)
+    
+    if not os.path.exists(file_path):
+        console.print(f"[red]✗ 文件不存在: {file_path}[/]")
+        return
+
+    console.print(Panel(f"正在诊断文件: [bold cyan]{file_path}[/]", title="[bold]🛠️ 提取器调试[/]"))
+    
+    res = ScanResult()
+    _scan_file(file_path, project_dir, res)
+    
+    table = Table(title="提取到的关系")
+    table.add_column("类型", style="magenta")
+    table.add_column("目标路径", style="green")
+    
+    for jsp, actions in res.jump_map.items():
+        for a in actions:
+            table.add_row("Jump (Action)", a)
+            
+    for jsp, incs in res.include_map.items():
+        for i in incs:
+            table.add_row("Include (JSP)", i)
+            
+    console.print(table)
+
+
 # ─── Main ───
 
 def main() -> None:
@@ -340,6 +378,8 @@ def main() -> None:
         cmd_stats(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "check":
+        cmd_check(args)
 
 
 if __name__ == "__main__":

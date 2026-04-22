@@ -18,73 +18,55 @@ SCAN_EXTENSIONS: frozenset = frozenset({".jsp", ".js", ".inc"})
 STRUTS_CONFIG_GLOB = "struts-config*.xml"
 
 # ─── Action 路径规范化 ───
-RE_DO_SUFFIX = re.compile(r"\.do$")
+RE_DO_SUFFIX = re.compile(r"\.do$", re.IGNORECASE)
 
 
 # ──────────────────────────────────────────────
 #  JSP / JS / INC 源码跳转提取规则
 # ──────────────────────────────────────────────
 
-# 1. Struts html:form action="/XXX" 或 action="XXX.do"
-RE_HTML_FORM_ACTION = re.compile(
-    r"""<html:form\s+[^>]*action\s*=\s*["']/?([^"']+?)["']""",
+# 1. 广谱 Struts 标签捕获: <html:XXX action="..." > 或 property="..."
+#    覆盖 link, form, rewrite, button, submit 等
+RE_STRUTS_TAG_ACTION = re.compile(
+    r"""<(?:html|bean|logic):\w+\s+[^>]*(?:action|property|forward|href|page)\s*=\s*["']/?([^"']+?)["']""",
     re.IGNORECASE,
 )
 
-# 2. 原生 <form action="/XXX.do">
-RE_NATIVE_FORM_ACTION = re.compile(
-    r"""<form\s+[^>]*action\s*=\s*["']/?([^"']+?\.do)["']""",
+# 2. 标准 HTML 标签捕获: <form action="...">, <a href="...">
+#    侧重于捕获带 .do 的跳转
+RE_HTML_JUMP = re.compile(
+    r"""<(?:form|a|frame|iframe)\s+[^>]*(?:action|href|src)\s*=\s*["']/?([^"']+?)["']""",
     re.IGNORECASE,
 )
 
-# 3. JS 显式跳转: location.href = "XXX.do" | location = "XXX.do"
-#    同时覆盖 location.replace / location.assign
-RE_JS_LOCATION_HREF = re.compile(
-    r"""(?:location(?:\.href)?|location\.(?:replace|assign))\s*=\s*["']/?([^"']+?\.do)["']""",
+# 3. JavaScript 字符串字面量中的 .do 捕获
+#    覆盖 submitForm(..., '/XXX.do'), window.open('/XXX.do'), location = 'XXX.do'
+RE_JS_DO_LITERAL = re.compile(
+    r"""["']/?([^"']+?\.do(?:[^"']*)?)["']""",
     re.IGNORECASE,
 )
 
-# 4. JS window.open("XXX.do")
-RE_JS_WINDOW_OPEN = re.compile(
-    r"""window\.open\s*\(\s*["']/?([^"']+?\.do)["']""",
+# 4. JS 动态路径拼接增强型捕获
+#    APP_URL + "/action.do" 或 "action" + ".do"
+RE_JS_CONCAT_ACTION = re.compile(
+    r"""(?:[A-Za-z_]\w*\s*\+\s*)?["']/?([^"']+?\.do[^"']*)["']""",
     re.IGNORECASE,
 )
 
-# 5. 封装函数提交: submitForm('form', '/XXX.do') | submit('form','/XXX.do')
-RE_SUBMIT_FORM = re.compile(
-    r"""submit(?:Form)?\s*\(\s*[^,]+,\s*["']/?([^"']+?\.do)""",
-    re.IGNORECASE,
-)
-
-# 6. 动态路径拼接: APP_URL + "/XXX.do" | baseUrl + '/XXX.do'
-#    只抓取字符串字面量中的 .do 路径部分
-RE_DYNAMIC_CONCAT = re.compile(
-    r"""[A-Za-z_]\w*\s*\+\s*["'](/[^"']+?\.do)""",
-)
-
-# 7. 超链接跳转: <a href="XXX.do"> 或 <a href="/XXX.do">
-RE_ANCHOR_HREF = re.compile(
-    r"""<a\s+[^>]*href\s*=\s*["']/?([^"']+?\.do)""",
-    re.IGNORECASE,
-)
-
-# 8. JavaScript 重定向: window.location = "XXX.do"
-RE_JS_REDIRECT = re.compile(
-    r"""window\.location(?:(?:\.href)?\s*=|\.replace\(|\.assign\()\s*["']/?([^"']+?\.do)""",
+# 5. 特殊：没有任何扩展名的 Action 调用 (针对特定跳转函数)
+#    例如: submitForm(fm, '/ActionName')
+RE_JS_FUNC_CALL = re.compile(
+    r"""(?:submit|jump|go|open|call|send|request)(?:To|Page|Form)?\s*\([^,]*?,\s*["']/?([^"']+?)["']""",
     re.IGNORECASE,
 )
 
 # ─── 汇总：按优先级依次执行的规则列表 ───
-#    每项: (regex, description)
 SOURCE_RULES: list[tuple[re.Pattern, str]] = [
-    (RE_HTML_FORM_ACTION, "html:form action"),
-    (RE_NATIVE_FORM_ACTION, "form action .do"),
-    (RE_JS_LOCATION_HREF, "location.href .do"),
-    (RE_JS_WINDOW_OPEN, "window.open .do"),
-    (RE_SUBMIT_FORM, "submitForm .do"),
-    (RE_DYNAMIC_CONCAT, "dynamic concat .do"),
-    (RE_ANCHOR_HREF, "anchor href .do"),
-    (RE_JS_REDIRECT, "js redirect .do"),
+    (RE_STRUTS_TAG_ACTION, "struts tag"),
+    (RE_HTML_JUMP, "html tag"),
+    (RE_JS_DO_LITERAL, "js literal"),
+    (RE_JS_CONCAT_ACTION, "js concat"),
+    (RE_JS_FUNC_CALL, "js func"),
 ]
 
 
@@ -92,13 +74,13 @@ SOURCE_RULES: list[tuple[re.Pattern, str]] = [
 #  JSP Include 规则（递归注入）
 # ──────────────────────────────────────────────
 
-# <jsp:include page="/XXX.jsp" /> | <jsp:include page="XXX.jsp">
+# <jsp:include page="/XXX.jsp" />
 RE_JSP_INCLUDE = re.compile(
     r"""<jsp:include\s+[^>]*page\s*=\s*["'](/?[^"']+?\.jsp)["']""",
     re.IGNORECASE,
 )
 
-# <%@ include file="/XXX.jsp" %> (静态 include)
+# <%@ include file="/XXX.jsp" %>
 RE_INCLUDE_DIRECTIVE = re.compile(
     r"""<%@\s*include\s+file\s*=\s*["'](/?[^"']+?\.jsp)["']""",
     re.IGNORECASE,
@@ -107,5 +89,5 @@ RE_INCLUDE_DIRECTIVE = re.compile(
 # ─── 汇总 ───
 INCLUDE_RULES: list[tuple[re.Pattern, str]] = [
     (RE_JSP_INCLUDE, "jsp:include"),
-    (RE_INCLUDE_DIRECTIVE, "include directive"),
+    (RE_INCLUDE_DIRECTIVE, "directive"),
 ]

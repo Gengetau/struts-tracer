@@ -104,18 +104,18 @@ class RouteGraph:
     def _resolve_jsp_node(self, xml_path: str) -> str:
         """
         尝试将 XML 中的 JSP 路径 (/jsp/A.jsp) 映射到实际扫描到的节点 (/docroot/jsp/A.jsp)。
-        优先精确匹配，其次后缀匹配。
+        由于内部已全小写化，这里直接进行后缀匹配。
         """
-        if xml_path in self._jsp_nodes:
-            return xml_path
+        xml_path_lower = xml_path.lower()
+        if xml_path_lower in self._jsp_nodes:
+            return xml_path_lower
         
-        # 后缀匹配 (例如: /jsp/Mail.jsp 匹配 /docroot/jsp/Mail.jsp)
-        # 我们找一个最短的且以 xml_path 结尾的已知 JSP 节点
-        candidates = [n for n in self._jsp_nodes if n.endswith(xml_path)]
+        # 后缀匹配
+        candidates = [n for n in self._jsp_nodes if n.endswith(xml_path_lower)]
         if candidates:
             return min(candidates, key=len)
             
-        return xml_path
+        return xml_path_lower
 
     # ─── Include 递归继承 ───
 
