@@ -1,6 +1,6 @@
 """
 graph_builder.py — 构建逻辑有向图
-核心策略：统一路径融合逻辑，支持大小写敏感性与不区分大小写的匹配，建立全谱系引用与跳转关系。
+核心策略：通过增强型路径融合逻辑，连接 XML 定义与源码中的各种调用变体。
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class RouteGraph:
             self.g.add_edge(u, v, type=EDGE_FORWARD)
             stats["forward_edges"] += 1
 
-        # 6. 计算继承统计（虽然引擎现在动态处理，但为了展示复杂度，我们进行一次预算）
+        # 6. 计算继承统计
         stats["inherited_edges"] = self._count_potential_inheritances()
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
@@ -83,35 +83,42 @@ class RouteGraph:
 
     def _resolve_node(self, raw_path: str, is_jsp: bool = True) -> str:
         """
-        核心路径融合算法：
-        1. 规范化（去 .do，补 /）
-        2. 尝试精确匹配
-        3. 尝试不区分大小写匹配
-        4. 尝试后缀匹配（处理 /jsp/A.jsp -> /docroot/jsp/A.jsp）
+        极致路径融合算法：
+        1. 规范化处理
+        2. 精确与大小写不敏感匹配
+        3. 增强型双向后缀匹配：
+           - 源码中是 /admin/Edit 而 XML 中定义为 /Edit -> 融合
+           - XML 中定义为 /WEB-INF/jsp/A.jsp 而源码中是 A.jsp -> 融合
         """
         p = RE_DO_SUFFIX.sub("", raw_path.strip())
         if not p.startswith("/"): p = "/" + p
         
-        # 1. 精确匹配
-        if p in self._jsp_nodes or p in self._action_nodes:
-            return p
-            
-        # 2. 不区分大小写匹配 (Case-Insensitive Fusion)
+        # 1. 直接匹配
+        if p in self._jsp_nodes or p in self._action_nodes: return p
         lower_p = p.lower()
-        if lower_p in self._case_map:
-            return self._case_map[lower_p]
+        if lower_p in self._case_map: return self._case_map[lower_p]
             
-        # 3. 后缀匹配 (用于连接 XML 中的抽象路径与磁盘上的真实路径)
-        if is_jsp or lower_p.endswith(".jsp"):
-            for node in self._jsp_nodes:
-                if node.endswith(p) or node.lower().endswith(lower_p):
-                    return node
+        # 2. 增强型后缀匹配 (核心：连接定义与调用)
+        # 查找是否存在一个已知节点是当前路径的后缀，或者当前路径是已知节点的后缀
+        all_nodes = self._jsp_nodes | self._action_nodes
         
-        # 4. 若仍未找到，注册为新节点（通常是 Action）
+        # A. 寻找包含此后缀的已知节点 (e.g., 调用 Edit.do -> 匹配 /admin/Edit)
+        candidates = [n for n in all_nodes if n.endswith(p) or n.lower().endswith(lower_p)]
+        if candidates:
+            return min(candidates, key=len)
+            
+        # B. 寻找此路径包含的已知节点 (e.g., 调用 /myApp/admin/Edit.do -> 匹配 /admin/Edit)
+        # 注意：这里需要从长往短匹配以保证精度
+        sorted_nodes = sorted(list(all_nodes), key=len, reverse=True)
+        for node in sorted_nodes:
+            if p.endswith(node) or lower_p.endswith(node.lower()):
+                return node
+        
+        # 3. 最终回退：注册为新节点
         return self._register_node(p, is_jsp=is_jsp)
 
     def _count_potential_inheritances(self) -> int:
-        """统计总共有多少跳转能力被通过 Include 关系继承了"""
+        """统计通过引用关系继承的跳转能力"""
         dep_graph = nx.DiGraph()
         for u, v, d in self.g.edges(data=True):
             if d.get("type") == EDGE_INCLUDE: dep_graph.add_edge(u, v)
@@ -121,14 +128,12 @@ class RouteGraph:
             try:
                 descendants = nx.descendants(dep_graph, node)
                 for desc in descendants:
-                    # 统计子件的出边中，有多少是父件没有的
                     for _, target, d in self.g.out_edges(desc, data=True):
                         if d.get("type") == EDGE_JUMP and not self.g.has_edge(node, target):
                             count += 1
             except Exception: continue
         return count
 
-    # ─── 查询辅助 ───
     def is_jsp(self, node: str) -> bool: return node in self._jsp_nodes
     def is_action(self, node: str) -> bool: return node in self._action_nodes
     def node_type_label(self, node: str) -> str:
