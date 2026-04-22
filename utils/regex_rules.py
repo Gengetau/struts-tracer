@@ -39,22 +39,27 @@ RE_HTML_JUMP = re.compile(
     re.IGNORECASE,
 )
 
-# 3. JavaScript 字符串字面量中的 .do 捕获
+# 3. 自定义内联标签捕获: <patlics:frame src="..." />
+#    针对特定项目的非标准内联组件
+RE_CUSTOM_FRAME_JUMP = re.compile(
+    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["']/?([^"']+?)["']""",
+    re.IGNORECASE,
+)
+
+# 4. JavaScript 字符串字面量中的 .do 捕获
 #    覆盖 submitForm(..., '/XXX.do'), window.open('/XXX.do'), location = 'XXX.do'
 RE_JS_DO_LITERAL = re.compile(
     r"""["']/?([^"']+?\.do(?:[^"']*)?)["']""",
     re.IGNORECASE,
 )
 
-# 4. JS 动态路径拼接增强型捕获
-#    APP_URL + "/action.do" 或 "action" + ".do"
+# 5. JS 动态路径拼接增强型捕获
 RE_JS_CONCAT_ACTION = re.compile(
     r"""(?:[A-Za-z_]\w*\s*\+\s*)?["']/?([^"']+?\.do[^"']*)["']""",
     re.IGNORECASE,
 )
 
-# 5. 特殊：没有任何扩展名的 Action 调用 (针对特定跳转函数)
-#    例如: submitForm(fm, '/ActionName')
+# 6. 特殊：针对特定跳转函数的捕获
 RE_JS_FUNC_CALL = re.compile(
     r"""(?:submit|jump|go|open|call|send|request)(?:To|Page|Form)?\s*\([^,]*?,\s*["']/?([^"']+?)["']""",
     re.IGNORECASE,
@@ -64,6 +69,7 @@ RE_JS_FUNC_CALL = re.compile(
 SOURCE_RULES: list[tuple[re.Pattern, str]] = [
     (RE_STRUTS_TAG_ACTION, "struts tag"),
     (RE_HTML_JUMP, "html tag"),
+    (RE_CUSTOM_FRAME_JUMP, "custom patlics tag"),
     (RE_JS_DO_LITERAL, "js literal"),
     (RE_JS_CONCAT_ACTION, "js concat"),
     (RE_JS_FUNC_CALL, "js func"),
@@ -86,8 +92,15 @@ RE_INCLUDE_DIRECTIVE = re.compile(
     re.IGNORECASE,
 )
 
+# <patlics:frame src="..." /> 指向 JSP 的情况
+RE_CUSTOM_FRAME_INCLUDE = re.compile(
+    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["'](/?[^"']+?\.jsp)["']""",
+    re.IGNORECASE,
+)
+
 # ─── 汇总 ───
 INCLUDE_RULES: list[tuple[re.Pattern, str]] = [
     (RE_JSP_INCLUDE, "jsp:include"),
     (RE_INCLUDE_DIRECTIVE, "directive"),
+    (RE_CUSTOM_FRAME_INCLUDE, "custom patlics include"),
 ]
