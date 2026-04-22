@@ -29,17 +29,9 @@ class RouteGraph:
         for jsp in scan_result.jump_map: self._jsp_nodes.add(jsp)
         for jsp in scan_result.include_map: self._jsp_nodes.add(jsp)
 
-        # 2. JSP -> Target (Source Jump)
-        for jsp, targets in scan_result.jump_map.items():
-            for target in targets:
-                # 尝试解析目标是 JSP 还是 Action
-                if target.lower().endswith(".jsp"):
-                    real_target = self._resolve_jsp_node(target)
-                    self.g.add_edge(jsp, real_target, type=EDGE_JUMP)
-                else:
-                    self._action_nodes.add(target)
-                    self.g.add_edge(jsp, target, type=EDGE_JUMP)
-                stats["jump_edges"] += 1
+        # 2. 建立 Include/Script 依赖关系 (JSP -> Included JSP/JS)
+        # 注意：这里我们不仅处理 Include，还处理 <script src> 的依赖
+        self._inject_dependencies(scan_result.include_map, stats)
 
         # 3. Action -> JSP (XML Forward)
         for action, targets in xml_result.action_forwards.items():
@@ -59,47 +51,55 @@ class RouteGraph:
             self.g.add_edge(node_key, real_jsp, type=EDGE_FORWARD)
             stats["forward_edges"] += 1
 
-        # 5. Include 继承注入
-        self._inject_includes(scan_result.include_map, stats)
+        # 5. JSP/JS -> Target (Source Jump)
+        for src_file, targets in scan_result.jump_map.items():
+            # 这里 src_file 可能是 .jsp 也可能是 .js
+            self._jsp_nodes.add(src_file) 
+            for target in targets:
+                if target.lower().endswith(".jsp"):
+                    real_target = self._resolve_jsp_node(target)
+                    self.g.add_edge(src_file, real_target, type=EDGE_JUMP)
+                else:
+                    self._action_nodes.add(target)
+                    self.g.add_edge(src_file, target, type=EDGE_JUMP)
+                stats["jump_edges"] += 1
+
+        # 6. 特殊逻辑：让父级 JSP 继承子级（被 Include 的 JSP 或被引用的 JS）的跳转能力
+        self._inject_inheritance(stats)
 
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
         return stats
 
-    def _resolve_jsp_node(self, path: str) -> str:
-        """路径融合逻辑：处理大小写与相对路径差异"""
-        if path in self._jsp_nodes: return path
-        
-        # 尝试忽略大小写匹配
-        path_lower = path.lower()
-        for node in self._jsp_nodes:
-            if node.lower() == path_lower: return node
-            
-        # 后缀匹配 (e.g. /Login.jsp -> /docroot/jsp/Login.jsp)
-        candidates = [n for n in self._jsp_nodes if n.endswith(path) or n.lower().endswith(path_lower)]
-        if candidates: return min(candidates, key=len)
-            
-        return path
-
-    def _inject_includes(self, include_map: Dict[str, List[str]], stats: Dict[str, int]) -> None:
-        inc_graph = nx.DiGraph()
+    def _inject_dependencies(self, include_map: Dict[str, List[str]], stats: Dict[str, int]) -> None:
+        """建立基础依赖边"""
         for parent, children in include_map.items():
             p_node = self._resolve_jsp_node(parent)
             self._jsp_nodes.add(p_node)
             for child in children:
                 c_node = self._resolve_jsp_node(child)
                 self._jsp_nodes.add(c_node)
-                inc_graph.add_edge(p_node, c_node)
+                # 建立依赖边：父 -> 子
                 self.g.add_edge(p_node, c_node, type=EDGE_INCLUDE)
                 stats["include_edges"] += 1
 
+    def _inject_inheritance(self, stats: Dict[str, int]) -> None:
+        """递归继承注入：如果 A 引用了 B，且 B 有出边到 C，则建立 A 到 C 的虚拟边"""
+        # 建立一个只有依赖关系的子图
+        dep_graph = nx.DiGraph()
+        for u, v, data in self.g.edges(data=True):
+            if data.get("type") == EDGE_INCLUDE:
+                dep_graph.add_edge(u, v)
+
         inherited = 0
-        for parent in list(inc_graph.nodes):
+        for parent in list(dep_graph.nodes):
             try:
-                descendants = nx.descendants(inc_graph, parent)
+                # 找到该文件所有直接或间接引用的“子件”（JSP 或 JS）
+                descendants = nx.descendants(dep_graph, parent)
             except Exception: continue
             
             for desc in descendants:
+                # 收集子件所有的跳转出边（Jump 到 Action 或 JSP）
                 for _, target, data in list(self.g.out_edges(desc, data=True)):
                     if data.get("type") == EDGE_JUMP and not self.g.has_edge(parent, target):
                         self.g.add_edge(parent, target, type="inherited")
