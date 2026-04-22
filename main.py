@@ -23,6 +23,45 @@ from core.graph_builder import RouteGraph
 from core.tracer_engine import TracerEngine, DEFAULT_MAX_DEPTH
 
 console = Console()
+CONFIG_FILE = ".tracer_config"
+
+
+# ─── 配置持久化 ───
+
+def _save_config(project_dir: str) -> None:
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write(project_dir)
+    except Exception:
+        pass
+
+
+def _load_config() -> str | None:
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+    return None
+
+
+def _get_project_dir(args_dir: str | None) -> str:
+    """获取项目目录：优先使用参数，其次使用保存的配置"""
+    if args_dir:
+        abs_path = os.path.abspath(args_dir)
+        _save_config(abs_path)
+        return abs_path
+
+    saved = _load_config()
+    if saved:
+        if os.path.isdir(saved):
+            return saved
+        else:
+            console.print(f"[yellow]⚠ 已保存的路径不再有效: {saved}[/]")
+
+    console.print("[red]✗ 错误: 未指定项目目录。请使用 --dir 指定，或先执行一次带 --dir 的指令以记录路径。[/]")
+    sys.exit(1)
 
 
 # ─── CLI 参数 ───
@@ -37,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     # trace 子命令
     tr = sub.add_parser("trace", help="寻踪指定页面的链路")
     tr.add_argument("--target", "-t", required=True, help="目标页面名（支持模糊匹配）")
-    tr.add_argument("--dir", "-d", required=True, help="项目根目录路径")
+    tr.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     tr.add_argument(
         "--direction",
         choices=["reverse", "forward"],
@@ -48,11 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # stats 子命令
     st = sub.add_parser("stats", help="输出项目图统计信息")
-    st.add_argument("--dir", "-d", required=True, help="项目根目录路径")
+    st.add_argument("--dir", "-d", required=False, help="项目根目录路径")
 
     # search 子命令
     se = sub.add_parser("search", help="模糊搜索节点")
-    se.add_argument("--dir", "-d", required=True, help="项目根目录路径")
+    se.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     se.add_argument("--keyword", "-k", required=True, help="搜索关键词")
 
     return p
@@ -178,7 +217,7 @@ def _node_label(node_type: str, name: str, is_target: bool = False) -> Text:
 # ─── 子命令处理 ───
 
 def cmd_trace(args) -> None:
-    project_dir = os.path.abspath(args.dir)
+    project_dir = _get_project_dir(args.dir)
     if not os.path.isdir(project_dir):
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
@@ -198,7 +237,7 @@ def cmd_trace(args) -> None:
 
 
 def cmd_stats(args) -> None:
-    project_dir = os.path.abspath(args.dir)
+    project_dir = _get_project_dir(args.dir)
     if not os.path.isdir(project_dir):
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
@@ -208,7 +247,7 @@ def cmd_stats(args) -> None:
     # 额外统计
     jsp_nodes = [n for n in graph.g.nodes if graph.is_jsp(n)]
     action_nodes = [n for n in graph.g.nodes if graph.is_action(n)]
-    isolated = list(nx.isolates(graph.g))  # noqa: F821 (networkx already imported in graph_builder)
+    isolated = list(nx.isolates(graph.g))
 
     # 入度为 0 的 JSP（入口页面）
     entry_jsp = [n for n in jsp_nodes if graph.g.in_degree(n) == 0]
@@ -230,7 +269,7 @@ def cmd_stats(args) -> None:
 
 
 def cmd_search(args) -> None:
-    project_dir = os.path.abspath(args.dir)
+    project_dir = _get_project_dir(args.dir)
     if not os.path.isdir(project_dir):
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
