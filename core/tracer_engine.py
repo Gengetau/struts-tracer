@@ -41,7 +41,7 @@ class TracerEngine:
         potential_sources = []
         if entries:
             for e in entries:
-                resolved_e = self.graph._resolve_node(e, hint_jsp=True)
+                resolved_e = self.graph._resolve_node(e, is_jsp=True)
                 if self.graph.has_node(resolved_e):
                     potential_sources.append(resolved_e)
         
@@ -128,7 +128,7 @@ class TracerEngine:
 
     def _resolve_target(self, target: str, result: TraceResult) -> Optional[str]:
         if self.graph.has_node(target): return target
-        resolved = self.graph._resolve_node(target, hint_jsp=True)
+        resolved = self.graph._resolve_node(target, is_jsp=True)
         if self.graph.has_node(resolved): return resolved
         matches = self.graph.fuzzy_find(target, limit=5)
         if matches: return matches[0]
