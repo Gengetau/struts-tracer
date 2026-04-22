@@ -36,9 +36,13 @@ class ScanResult:
 
 
 def _normalize_action(raw: str) -> str:
-    """提取到的 action 字符串规范化：去 .do 后缀、加 / 前缀"""
+    """提取到的 action 字符串规范化：截断参数、去 .do 后缀、加 / 前缀"""
     p = raw.strip()
+    # 1. 截断查询参数 (e.g., /Search.do?id=1 -> /Search.do)
+    p = p.split('?')[0].split('#')[0]
+    # 2. 去除 .do 后缀
     p = RE_DO_SUFFIX.sub("", p)
+    # 3. 确保以 / 开头
     if not p.startswith("/"):
         p = "/" + p
     return p
@@ -58,20 +62,19 @@ def _to_project_path(file_path: str, project_dir: str) -> str:
     return rel
 
 
-def _normalize_include_path(raw: str, parent_dir: str) -> str:
+def _normalize_include_path(raw: str, parent_dir: str, project_dir: str) -> str:
     """
     Include 路径可能是绝对 (/jsp/Header.jsp) 或相对 (../Header.jsp)。
-    统一转为项目绝对路径格式。
+    统一转为项目相对绝对路径格式（/jsp/xxx.jsp）。
     """
     p = raw.strip()
     if p.startswith("/"):
+        # 已经是项目绝对路径格式
         return p
-    # 相对路径：基于 parent 文件目录解析
-    resolved = os.path.normpath(os.path.join(parent_dir, p))
-    resolved = resolved.replace(os.sep, "/")
-    if not resolved.startswith("/"):
-        resolved = "/" + resolved
-    return resolved
+    # 相对路径：基于 parent 文件目录解析出绝对 OS 路径
+    abs_path = os.path.abspath(os.path.join(parent_dir, p))
+    # 转换为项目相对路径
+    return _to_project_path(abs_path, project_dir)
 
 
 def _scan_file(
@@ -110,7 +113,7 @@ def _scan_file(
     for regex, _desc in INCLUDE_RULES:
         for m in regex.finditer(content):
             raw_inc = m.group(1)
-            inc_path = _normalize_include_path(raw_inc, parent_dir)
+            inc_path = _normalize_include_path(raw_inc, parent_dir, project_dir)
             if inc_path:
                 includes.add(inc_path)
 

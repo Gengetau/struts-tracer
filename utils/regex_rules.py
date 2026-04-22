@@ -52,14 +52,26 @@ RE_JS_WINDOW_OPEN = re.compile(
 
 # 5. 封装函数提交: submitForm('form', '/XXX.do') | submit('form','/XXX.do')
 RE_SUBMIT_FORM = re.compile(
-    r"""submit(?:Form)?\s*\(\s*[^,]+,\s*["']/?([^"']+?\.do)["']""",
+    r"""submit(?:Form)?\s*\(\s*[^,]+,\s*["']/?([^"']+?\.do)""",
     re.IGNORECASE,
 )
 
 # 6. 动态路径拼接: APP_URL + "/XXX.do" | baseUrl + '/XXX.do'
 #    只抓取字符串字面量中的 .do 路径部分
 RE_DYNAMIC_CONCAT = re.compile(
-    r"""[A-Za-z_]\w*\s*\+\s*["'](/[^"']+?\.do)["']""",
+    r"""[A-Za-z_]\w*\s*\+\s*["'](/[^"']+?\.do)""",
+)
+
+# 7. 超链接跳转: <a href="XXX.do"> 或 <a href="/XXX.do">
+RE_ANCHOR_HREF = re.compile(
+    r"""<a\s+[^>]*href\s*=\s*["']/?([^"']+?\.do)""",
+    re.IGNORECASE,
+)
+
+# 8. JavaScript 重定向: window.location = "XXX.do"
+RE_JS_REDIRECT = re.compile(
+    r"""window\.location(?:(?:\.href)?\s*=|\.replace\(|\.assign\()\s*["']/?([^"']+?\.do)""",
+    re.IGNORECASE,
 )
 
 # ─── 汇总：按优先级依次执行的规则列表 ───
@@ -71,6 +83,8 @@ SOURCE_RULES: list[tuple[re.Pattern, str]] = [
     (RE_JS_WINDOW_OPEN, "window.open .do"),
     (RE_SUBMIT_FORM, "submitForm .do"),
     (RE_DYNAMIC_CONCAT, "dynamic concat .do"),
+    (RE_ANCHOR_HREF, "anchor href .do"),
+    (RE_JS_REDIRECT, "js redirect .do"),
 ]
 
 

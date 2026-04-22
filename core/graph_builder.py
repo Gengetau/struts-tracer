@@ -73,12 +73,49 @@ class RouteGraph:
                 self.g.add_edge(jsp, action, type=EDGE_JUMP)
                 stats["jump_edges"] += 1
 
-        # ── 4. Include 边 + 递归继承注入 ──
+        # ── 4. Action → JSP (修正：映射 XML 路径到实际文件路径) ──
+        # 我们已经有了从源码扫描得到的 jsp_nodes（基于实际文件路径）
+        # 现在将 XML 中的目标 JSP 映射到这些实际节点上
+        resolved_forward_edges = 0
+        for action, targets in xml_result.action_forwards.items():
+            for xml_jsp in targets:
+                real_jsp = self._resolve_jsp_node(xml_jsp)
+                self._jsp_nodes.add(real_jsp)
+                self.g.add_edge(action, real_jsp, type=EDGE_FORWARD)
+                resolved_forward_edges += 1
+        stats["forward_edges"] = resolved_forward_edges
+
+        # ── 5. 全局 Forward 映射 ──
+        for fwd_name, xml_jsp in xml_result.global_forwards.items():
+            node_key = f"/GlobalForward:{fwd_name}"
+            self._action_nodes.add(node_key)
+            real_jsp = self._resolve_jsp_node(xml_jsp)
+            self._jsp_nodes.add(real_jsp)
+            self.g.add_edge(node_key, real_jsp, type=EDGE_FORWARD)
+            stats["forward_edges"] += 1
+
+        # ── 6. Include 边 + 递归继承注入 ──
         self._inject_includes(scan_result.include_map, stats)
 
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
         return stats
+
+    def _resolve_jsp_node(self, xml_path: str) -> str:
+        """
+        尝试将 XML 中的 JSP 路径 (/jsp/A.jsp) 映射到实际扫描到的节点 (/docroot/jsp/A.jsp)。
+        优先精确匹配，其次后缀匹配。
+        """
+        if xml_path in self._jsp_nodes:
+            return xml_path
+        
+        # 后缀匹配 (例如: /jsp/Mail.jsp 匹配 /docroot/jsp/Mail.jsp)
+        # 我们找一个最短的且以 xml_path 结尾的已知 JSP 节点
+        candidates = [n for n in self._jsp_nodes if n.endswith(xml_path)]
+        if candidates:
+            return min(candidates, key=len)
+            
+        return xml_path
 
     # ─── Include 递归继承 ───
 
