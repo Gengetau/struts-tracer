@@ -15,6 +15,7 @@ class TracePath:
     def __init__(self, nodes: List[str], graph: RouteGraph) -> None:
         self.nodes = nodes
         self.graph = graph
+    def __len__(self) -> int: return len(self.nodes)
     def labels(self) -> List[Tuple[str, str]]:
         return [(self.graph.node_type_label(n), n) for n in self.nodes]
 
