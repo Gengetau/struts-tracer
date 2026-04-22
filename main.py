@@ -8,6 +8,8 @@ import argparse
 import os
 import sys
 import time
+import pickle
+import hashlib
 
 import networkx as nx
 from rich.console import Console
@@ -24,9 +26,41 @@ from core.tracer_engine import TracerEngine, DEFAULT_MAX_DEPTH
 
 console = Console()
 CONFIG_FILE = ".tracer_config"
+CACHE_DIR = ".tracer_cache"
+
+# ─── 配置与缓存持久化 ───
+
+def _get_cache_path(project_dir: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    # 使用路径哈希作为文件名，防止冲突
+    h = hashlib.md5(project_dir.encode('utf-8')).hexdigest()
+    return os.path.join(CACHE_DIR, f"graph_{h}.pkl")
 
 
-# ─── 配置持久化 ───
+def _save_cache(project_dir: str, graph: RouteGraph, stats: dict, config_paths: list) -> None:
+    cache_path = _get_cache_path(project_dir)
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump({
+                "graph": graph,
+                "stats": stats,
+                "config_paths": config_paths,
+                "timestamp": time.time()
+            }, f)
+    except Exception as e:
+        console.print(f"[dim yellow]⚠ 缓存写入失败: {e}[/]")
+
+
+def _load_cache(project_dir: str) -> dict | None:
+    cache_path = _get_cache_path(project_dir)
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            return None
+    return None
+
 
 def _save_config(project_dir: str) -> None:
     try:
@@ -77,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr = sub.add_parser("trace", help="寻踪指定页面的链路")
     tr.add_argument("--target", "-t", required=True, help="目标页面名（支持模糊匹配）")
     tr.add_argument("--dir", "-d", required=False, help="项目根目录路径")
+    tr.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
     tr.add_argument(
         "--direction",
         choices=["reverse", "forward"],
@@ -88,63 +123,66 @@ def build_parser() -> argparse.ArgumentParser:
     # stats 子命令
     st = sub.add_parser("stats", help="输出项目图统计信息")
     st.add_argument("--dir", "-d", required=False, help="项目根目录路径")
+    st.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
 
     # search 子命令
     se = sub.add_parser("search", help="模糊搜索节点")
     se.add_argument("--dir", "-d", required=False, help="项目根目录路径")
     se.add_argument("--keyword", "-k", required=True, help="搜索关键词")
+    se.add_argument("--refresh", "-r", action="store_true", help="强制重新扫描（忽略缓存）")
 
     return p
 
 
 # ─── 构建图 ───
 
-def _build_graph(project_dir: str) -> RouteGraph:
-    """执行完整解析流程并返回路由图"""
+def _build_graph(project_dir: str, refresh: bool = False) -> RouteGraph:
+    """执行完整解析流程并返回路由图，支持缓存"""
+    
+    if not refresh:
+        cached_data = _load_cache(project_dir)
+        if cached_data:
+            graph = cached_data["graph"]
+            stats = cached_data["stats"]
+            config_paths = cached_data["config_paths"]
+            ts = cached_data["timestamp"]
+            
+            console.print(f"[dim blue]🌙 已加载缓存节点图 (更新于: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))})[/]")
+            _print_summary(stats, config_paths)
+            return graph
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
         transient=True,
     ) as progress:
-
-        # ── Phase 1: XML 解析 ──
+        # ... (rest of the logic unchanged, but we need to capture stats and config_paths to save)
+        # XML
         task = progress.add_task("解析 struts-config*.xml ...", total=None)
         xml_result, config_paths = scan_struts_configs(project_dir)
-
         progress.update(task, description=f"发现 {len(config_paths)} 个配置, {len(xml_result.action_forwards)} 个 Action")
 
-        # ── Phase 2: 源码扫描 ──
+        # Source
         task2 = progress.add_task("正在扫描源码文件...", total=100)
-
         def on_scan_progress(current, total):
             progress.update(task2, total=total, completed=current, description=f"扫描 JSP/JS 源码 ({current}/{total})...")
-
         scan_result = scan_project(project_dir, progress_callback=on_scan_progress)
+        progress.update(task2, description=f"扫描完成: {scan_result.files_scanned} 文件")
 
-        progress.update(
-            task2,
-            description=(
-                f"扫描完成: {scan_result.files_scanned} 文件, "
-                f"提取 {scan_result.jump_relations} 跳转, "
-                f"{scan_result.include_relations} Include"
-            ),
-        )
-
-        # ── Phase 3: 构建图 ──
+        # Graph
         task3 = progress.add_task("构建节点图 + Include 递归继承 ...", total=None)
         graph = RouteGraph()
         stats = graph.build(xml_result, scan_result)
+        progress.update(task3, description="图构建完成")
 
-        progress.update(
-            task3,
-            description=(
-                f"图构建完成: {graph.node_count()} 节点, {graph.edge_count()} 边 "
-                f"(继承 {stats.get('inherited_edges', 0)} 条, "
-                f"环路断开 {stats.get('cycles_broken', 0)} 处)"
-            ),
-        )
+    # 保存缓存
+    _save_cache(project_dir, graph, stats, config_paths)
+    _print_summary(stats, config_paths)
+    return graph
 
+
+def _print_summary(stats: dict, config_paths: list) -> None:
     # ── 汇总面板 ──
     summary = Table(show_header=False, box=None, padding=(0, 2))
     summary.add_row("[bold]配置文件[/]", str(len(config_paths)))
@@ -154,10 +192,7 @@ def _build_graph(project_dir: str) -> RouteGraph:
     summary.add_row("[bold]Forward 边[/]", str(stats.get("forward_edges", 0)))
     summary.add_row("[bold]Include 边[/]", str(stats.get("include_edges", 0)))
     summary.add_row("[bold]继承边[/]", str(stats.get("inherited_edges", 0)))
-    summary.add_row("[bold]环路断开[/]", str(stats.get("cycles_broken", 0)))
     console.print(Panel(summary, title="[bold cyan]📊 解析结果[/]", border_style="cyan"))
-
-    return graph
 
 
 # ─── 渲染链路 ───
@@ -222,7 +257,7 @@ def cmd_trace(args) -> None:
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
 
-    graph = _build_graph(project_dir)
+    graph = _build_graph(project_dir, refresh=args.refresh)
     engine = TracerEngine(graph, max_depth=args.max_depth)
 
     console.print()
@@ -242,7 +277,7 @@ def cmd_stats(args) -> None:
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
 
-    graph = _build_graph(project_dir)
+    graph = _build_graph(project_dir, refresh=args.refresh)
 
     # 额外统计
     jsp_nodes = [n for n in graph.g.nodes if graph.is_jsp(n)]
@@ -274,7 +309,7 @@ def cmd_search(args) -> None:
         console.print(f"[red]✗ 目录不存在: {project_dir}[/]")
         sys.exit(1)
 
-    graph = _build_graph(project_dir)
+    graph = _build_graph(project_dir, refresh=args.refresh)
     matches = graph.fuzzy_find(args.keyword, limit=30)
 
     if not matches:
