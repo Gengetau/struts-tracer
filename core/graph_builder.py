@@ -5,6 +5,7 @@ graph_builder.py — 构建逻辑有向图
 
 from __future__ import annotations
 from typing import Dict, List, Set, Any
+import os
 import networkx as nx
 from parser.xml_parser import ParseResult
 from parser.source_scanner import ScanResult
@@ -37,17 +38,16 @@ class RouteGraph:
             u = self._resolve_node(parent)
             for child in children:
                 v = self._resolve_node(child)
-                self.g.add_edge(u, v, type=EDGE_INCLUDE)
+                self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v))
                 stats["include_edges"] += 1
 
         # 3. 建立源码跳转边 (JSP/JS -> Target)
         for src, targets in scan_result.jump_map.items():
             u = self._resolve_node(src)
             for raw_target in targets:
-                # 判定目标类型：如果是 .jsp 则视为页面，否则视为 Action
                 is_target_jsp = raw_target.lower().endswith(".jsp")
                 v = self._resolve_node(raw_target, is_jsp=is_target_jsp)
-                self.g.add_edge(u, v, type=EDGE_JUMP)
+                self.g.add_edge(u, v, type=EDGE_JUMP, weight=self._calc_weight(u, v))
                 stats["jump_edges"] += 1
 
         # 4. 建立 XML Forward 边 (Action -> JSP)
@@ -55,14 +55,14 @@ class RouteGraph:
             u = self._resolve_node(action, is_jsp=False)
             for target in targets:
                 v = self._resolve_node(target, is_jsp=True)
-                self.g.add_edge(u, v, type=EDGE_FORWARD)
+                self.g.add_edge(u, v, type=EDGE_FORWARD, weight=self._calc_weight(u, v))
                 stats["forward_edges"] += 1
 
         # 5. 全局 Forward 处理
         for fwd, target in xml_result.global_forwards.items():
             u = self._resolve_node(f"/GlobalForward:{fwd}", is_jsp=False)
             v = self._resolve_node(target, is_jsp=True)
-            self.g.add_edge(u, v, type=EDGE_FORWARD)
+            self.g.add_edge(u, v, type=EDGE_FORWARD, weight=self._calc_weight(u, v))
             stats["forward_edges"] += 1
 
         # 6. 计算继承统计
@@ -70,6 +70,22 @@ class RouteGraph:
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
         return stats
+
+    def _calc_weight(self, u: str, v: str) -> int:
+        """
+        计算边权重以优化搜索逻辑：
+        - 同一目录下：权重 1 (极高优先级)
+        - 跨目录跳转：权重 10 (低优先级)
+        - 涉及 Action 的跳转：权重 2 (常规优先级)
+        """
+        if self.is_action(u) or self.is_action(v):
+            return 2
+        
+        u_dir = os.path.dirname(u)
+        v_dir = os.path.dirname(v)
+        if u_dir == v_dir:
+            return 1
+        return 10
 
     def _register_node(self, path: str, is_jsp: bool) -> str:
         """记录节点并维护路径融合映射"""
