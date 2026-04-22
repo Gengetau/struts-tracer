@@ -12,7 +12,7 @@ SKIP_DIRS: frozenset = frozenset({
 })
 
 # ─── 扫描文件后缀 ───
-SCAN_EXTENSIONS: frozenset = frozenset({".jsp", ".js", ".inc"})
+SCAN_EXTENSIONS: frozenset = frozenset({".jsp", ".js", ".inc", ".html", ".htm"})
 
 # ─── XML 配置文件 glob ───
 STRUTS_CONFIG_GLOB = "struts-config*.xml"
@@ -77,24 +77,30 @@ SOURCE_RULES: list[tuple[re.Pattern, str]] = [
 
 
 # ──────────────────────────────────────────────
-#  JSP Include 规则（递归注入）
+#  JSP Include / Script 引用规则（递归注入）
 # ──────────────────────────────────────────────
 
-# <jsp:include page="/XXX.jsp" />
+# 1. <jsp:include page="/XXX.jsp" />
 RE_JSP_INCLUDE = re.compile(
-    r"""<jsp:include\s+[^>]*page\s*=\s*["'](/?[^"']+?\.jsp)["']""",
+    r"""<jsp:include\s+[^>]*page\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
     re.IGNORECASE,
 )
 
-# <%@ include file="/XXX.jsp" %>
+# 2. <%@ include file="/XXX.jsp" %>
 RE_INCLUDE_DIRECTIVE = re.compile(
-    r"""<%@\s*include\s+file\s*=\s*["'](/?[^"']+?\.jsp)["']""",
+    r"""<%@\s*include\s+file\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
     re.IGNORECASE,
 )
 
-# <patlics:frame src="..." /> 指向 JSP 的情况
+# 3. <patlics:frame src="..." /> 指向 JSP 的情况
 RE_CUSTOM_FRAME_INCLUDE = re.compile(
-    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["'](/?[^"']+?\.jsp)["']""",
+    r"""<patlics:frame\s+[^>]*(?:src|url|page|path)\s*=\s*["'](/?[^"']+?\.(?:jsp|inc|html|htm))["']""",
+    re.IGNORECASE,
+)
+
+# 4. <script src="..."> 引用 JS 文件
+RE_SCRIPT_SRC = re.compile(
+    r"""<script\s+[^>]*src\s*=\s*["'](/?[^"']+?\.js(?:[^"']*)?)["']""",
     re.IGNORECASE,
 )
 
@@ -102,5 +108,6 @@ RE_CUSTOM_FRAME_INCLUDE = re.compile(
 INCLUDE_RULES: list[tuple[re.Pattern, str]] = [
     (RE_JSP_INCLUDE, "jsp:include"),
     (RE_INCLUDE_DIRECTIVE, "directive"),
-    (RE_CUSTOM_FRAME_INCLUDE, "custom patlics include"),
+    (RE_CUSTOM_FRAME_INCLUDE, "patlics frame"),
+    (RE_SCRIPT_SRC, "script src"),
 ]
