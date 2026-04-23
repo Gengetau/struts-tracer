@@ -1,6 +1,6 @@
 """
-source_scanner.py — 正则扫描源码文件
-提取跳转与 Include 关系，支持全谱系字符串捕获与常量定义识别。
+source_scanner.py — 源码扫描
+核心逻辑：提取路径、Include 关系、以及路径常量的定义与引用。
 """
 
 from __future__ import annotations
@@ -13,30 +13,26 @@ class ScanResult:
     def __init__(self) -> None:
         self.jump_map: Dict[str, List[str]] = {}
         self.include_map: Dict[str, List[str]] = {}
-        # 新增：常量定义映射 NAME -> PATH
+        # NAME -> REAL_PATH
         self.constants: Dict[str, str] = {}
-        # 新增：文件提及的单词，用于常量解析
+        # FILE -> Set of potential constant identifiers used
         self.mentions: Dict[str, Set[str]] = {}
         self.files_scanned: int = 0
         self.jump_relations: int = 0
         self.include_relations: int = 0
 
-def _normalize_path_logic(raw: str, parent_dir: str, project_dir: str) -> str:
-    """标准化路径：剥离参数，处理相对路径，保持大小写"""
+def _normalize_path(raw: str, parent_dir: str, project_dir: str) -> str:
     p = raw.strip().split('?')[0].split('#')[0]
     if not p: return ""
-    
     if not p.startswith("/"):
         try:
             abs_os_path = os.path.normpath(os.path.join(parent_dir, p))
             p = _to_project_path(abs_os_path, project_dir)
         except Exception: pass
-    
     if not p.startswith("/"): p = "/" + p
     return p
 
 def _to_project_path(file_path: str, project_dir: str) -> str:
-    """保持大小写的项目相对路径"""
     try:
         rel = os.path.relpath(file_path, project_dir)
     except Exception: rel = file_path
@@ -53,47 +49,47 @@ def _scan_file(file_path: str, project_dir: str, result: ScanResult) -> None:
     src_key = _to_project_path(file_path, project_dir)
     parent_dir = os.path.dirname(file_path)
 
-    # 1. 广谱捕捉跳转
-    jumps: Set[str] = set()
-    includes: Set[str] = set()
-    
-    for regex, _ in SOURCE_RULES:
-        for m in regex.finditer(content):
-            raw_url = m.group(1)
-            norm_url = _normalize_path_logic(raw_url, parent_dir, project_dir)
-            if not norm_url or norm_url == src_key: continue
-            
-            if src_key.lower().endswith(".jsp") and norm_url.lower().endswith(".js"):
-                includes.add(norm_url)
-            else:
-                jumps.add(norm_url)
-
-    # 2. 专门捕获包含标签
-    for regex, _ in INCLUDE_RULES:
-        for m in regex.finditer(content):
-            raw_inc = m.group(1)
-            norm_inc = _normalize_path_logic(raw_inc, parent_dir, project_dir)
-            if norm_inc and norm_inc != src_key:
-                includes.add(norm_inc)
-
-    # 3. 提取常量定义 (NAME = "/path")
+    # 1. 提取常量定义 (NAME = "/path")
+    # 记录哪些路径是被定义为常量的，这样我们可以从跳转图中排除掉定义者本身（防止它成为终点）
+    defined_paths_in_file = set()
     for m in RE_CONST_DEF.finditer(content):
         name = m.group(1)
         raw_val = m.group(2)
-        norm_val = _normalize_path_logic(raw_val, parent_dir, project_dir)
+        norm_val = _normalize_path(raw_val, parent_dir, project_dir)
         if norm_val:
             result.constants[name] = norm_val
+            defined_paths_in_file.add(norm_val)
 
-    # 4. 提取文件提及的所有可能常量名的单词 (全大写+蛇形)
-    # 这一步是为了后续在 Graph 层面建立虚拟边
-    all_words = set(re.findall(r"\b[A-Z_][A-Z0-9_]{2,}\b", content))
-    if all_words:
-        result.mentions[src_key] = all_words
+    # 2. 跳转提取
+    jumps: Set[str] = set()
+    includes: Set[str] = set()
+    for regex, _ in SOURCE_RULES:
+        for m in regex.finditer(content):
+            url = _normalize_path(m.group(1), parent_dir, project_dir)
+            if not url or url == src_key: continue
+            # 过滤：如果是本文件定义的常量路径，不作为本文件的跳转出边（防止定义文件被误认为业务入口）
+            if url in defined_paths_in_file: continue
+            
+            if src_key.lower().endswith(".jsp") and url.lower().endswith(".js"):
+                includes.add(url)
+            else:
+                jumps.add(url)
+
+    # 3. 显式标签引用
+    for regex, _ in INCLUDE_RULES:
+        for m in regex.finditer(content):
+            url = _normalize_path(m.group(1), parent_dir, project_dir)
+            if url and url != src_key: includes.add(url)
+
+    # 4. 捕捉所有可能的标识符（用于常量匹配）
+    # 查找所有单词，后续在图构建时匹配 constants 字典
+    possible_identifiers = set(re.findall(r"\b[a-zA-Z_]\w*\b", content))
+    if possible_identifiers:
+        result.mentions[src_key] = possible_identifiers
 
     if jumps:
         result.jump_map[src_key] = list(jumps)
         result.jump_relations += len(jumps)
-    
     if includes:
         result.include_map[src_key] = list(includes)
         result.include_relations += len(includes)
@@ -106,7 +102,6 @@ def scan_project(project_dir: str, progress_callback=None) -> ScanResult:
         for f in files:
             if os.path.splitext(f)[1].lower() in SCAN_EXTENSIONS:
                 files_to_scan.append(os.path.join(root, f))
-    
     total = len(files_to_scan)
     for i, fp in enumerate(files_to_scan):
         _scan_file(fp, project_dir, res)
