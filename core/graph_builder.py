@@ -25,18 +25,19 @@ class RouteGraph:
     def build(self, xml_result: ParseResult, scan_result: ScanResult) -> Dict[str, int]:
         stats = {
             "jsp_nodes": 0, "action_nodes": 0, "jump_edges": 0,
-            "forward_edges": 0, "include_edges": 0, "constant_jumps": 0
+            "forward_edges": 0, "include_edges": 0, "inherited_edges": 0,
+            "constant_jumps": 0
         }
 
         # 1. 注册物理文件
         all_files = set(scan_result.jump_map.keys()) | set(scan_result.include_map.keys()) | set(scan_result.mentions.keys())
-        for f in all_files: self._register_node(f, is_jsp=True)
+        for f in all_files: self._register_node(f, is_file=True)
 
         # 2. 建立包含/引用边 (JSP -> JS/JSP)
         for parent, children in scan_result.include_map.items():
             u = self._resolve_node(parent)
             for child in children:
-                v = self._resolve_node(child, is_jsp=child.lower().endswith(".jsp"))
+                v = self._resolve_node(child, is_file=child.lower().endswith((".jsp", ".js", ".inc")))
                 self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v, EDGE_INCLUDE))
                 stats["include_edges"] += 1
 
@@ -44,83 +45,66 @@ class RouteGraph:
         for src, targets in scan_result.jump_map.items():
             u = self._resolve_node(src)
             for raw_target in targets:
-                is_jsp = raw_target.lower().endswith(".jsp")
-                v = self._resolve_node(raw_target, is_jsp=is_jsp)
+                is_target_file = any(raw_target.lower().endswith(ext) for ext in [".jsp", ".js", ".inc"])
+                v = self._resolve_node(raw_target, is_file=is_target_file)
                 # 再次确认 JSP -> JS 的关系视为 Include
                 if u.lower().endswith(".jsp") and v.lower().endswith(".js"):
-                    self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v, EDGE_INCLUDE))
+                    if not self.g.has_edge(u, v):
+                        self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v, EDGE_INCLUDE))
+                        stats["include_edges"] += 1
                 else:
                     self.g.add_edge(u, v, type=EDGE_JUMP, weight=self._calc_weight(u, v, EDGE_JUMP))
                     stats["jump_edges"] += 1
 
-        # 4. 常量引用解析 (把 NAME 映射回 PATH)
+        # 4. 常量引用解析
         for src, words in scan_result.mentions.items():
             u = self._resolve_node(src)
             for word in words:
                 if word in scan_result.constants:
                     real_path = scan_result.constants[word]
-                    v = self._resolve_node(real_path, is_jsp=real_path.lower().endswith(".jsp"))
+                    v = self._resolve_node(real_path, is_file=any(real_path.lower().endswith(ext) for ext in [".jsp", ".js", ".inc"]))
                     if u != v and not self.g.has_edge(u, v):
-                        # 常量调用的权重设为中等，但高于同目录跳转
                         self.g.add_edge(u, v, type=EDGE_JUMP, weight=3, note=f"via {word}")
                         stats["constant_jumps"] += 1
 
         # 5. XML Forward
         for action, targets in xml_result.action_forwards.items():
-            u = self._resolve_node(action, is_jsp=False)
+            u = self._resolve_node(action, is_file=False)
             for target in targets:
-                v = self._resolve_node(target, is_jsp=True)
+                v = self._resolve_node(target, is_file=True)
                 self.g.add_edge(u, v, type=EDGE_FORWARD, weight=2)
                 stats["forward_edges"] += 1
 
         # 6. Global Forward
         for fwd, target in xml_result.global_forwards.items():
-            u = self._resolve_node(f"/GlobalForward:{fwd}", is_jsp=False)
-            v = self._resolve_node(target, is_jsp=True)
+            u = self._resolve_node(f"/GlobalForward:{fwd}", is_file=False)
+            v = self._resolve_node(target, is_file=True)
             self.g.add_edge(u, v, type=EDGE_FORWARD, weight=10)
             stats["forward_edges"] += 1
 
+        stats["inherited_edges"] = self._count_inheritances()
         stats["jsp_nodes"] = len(self._jsp_nodes)
         stats["action_nodes"] = len(self._action_nodes)
         return stats
 
     def _calc_weight(self, u: str, v: str, edge_type: str) -> int:
-        """
-        计算边权重：
-        - 同一目录下：1 (核心业务主干)
-        - 跨目录：
-            - Include: 5
-            - Jump: 20 (极力避免跨目录跳转作为回溯路径)
-        - 涉及全局配置文件：
-            - 如果 u 或 v 包含 "define", "appport", "constant", "common"：给一个巨大的惩罚值 100
-        """
-        u_lower = u.lower()
-        v_lower = v.lower()
-        
-        # 惩罚全局配置文件，防止它们成为链路中的“捷径”
+        u_lower, v_lower = u.lower(), v.lower()
         penalty_keywords = ["define", "appport", "constant", "common"]
         if any(kw in u_lower for kw in penalty_keywords) or any(kw in v_lower for kw in penalty_keywords):
             return 100
-
-        if self.is_action(u) or self.is_action(v):
-            return 2
-        
-        u_dir = os.path.dirname(u)
-        v_dir = os.path.dirname(v)
-        
-        if u_dir == v_dir:
-            return 1
-        
+        if self.is_action(u) or self.is_action(v): return 2
+        u_dir, v_dir = os.path.dirname(u), os.path.dirname(v)
+        if u_dir == v_dir: return 1
         return 5 if edge_type == EDGE_INCLUDE else 20
 
-    def _register_node(self, path: str, is_jsp: bool) -> str:
-        if is_jsp: self._jsp_nodes.add(path)
+    def _register_node(self, path: str, is_file: bool) -> str:
+        if is_file: self._jsp_nodes.add(path)
         else: self._action_nodes.add(path)
         lower_p = path.lower()
         if lower_p not in self._case_map: self._case_map[lower_p] = path
         return path
 
-    def _resolve_node(self, raw_path: str, is_jsp: bool = True) -> str:
+    def _resolve_node(self, raw_path: str, is_file: bool = True) -> str:
         p = RE_DO_SUFFIX.sub("", raw_path.strip())
         if not p.startswith("/"): p = "/" + p
         if p in self._jsp_nodes or p in self._action_nodes: return p
@@ -132,7 +116,21 @@ class RouteGraph:
         sorted_nodes = sorted(list(all_nodes), key=len, reverse=True)
         for node in sorted_nodes:
             if p.endswith(node) or lower_p.endswith(node.lower()): return node
-        return self._register_node(p, is_jsp=is_jsp)
+        return self._register_node(p, is_file=is_file)
+
+    def _count_inheritances(self) -> int:
+        dep_graph = nx.DiGraph()
+        for u, v, d in self.g.edges(data=True):
+            if d.get("type") == EDGE_INCLUDE: dep_graph.add_edge(u, v)
+        count = 0
+        for node in list(dep_graph.nodes):
+            try:
+                for desc in nx.descendants(dep_graph, node):
+                    for _, target, d in self.g.out_edges(desc, data=True):
+                        if d.get("type") == EDGE_JUMP and not self.g.has_edge(node, target):
+                            count += 1
+            except Exception: continue
+        return count
 
     def is_jsp(self, node: str) -> bool: return node in self._jsp_nodes
     def is_action(self, node: str) -> bool: return node in self._action_nodes
