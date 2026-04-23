@@ -28,5 +28,12 @@ RE_INCLUDE_TAG = re.compile(
     re.IGNORECASE,
 )
 
+# ─── 常量定义捕获 (JS 变量赋值) ───
+# 捕捉形如 var PATH_NAME = "/action.do" 的逻辑
+# 限制：常量名全大写或蛇形命名，且值必须符合路径特征
+RE_CONST_DEF = re.compile(
+    r"""(?:var|const|let|this)\s+([A-Z_][A-Z0-9_]{2,})\s*=\s*""" + RE_URL_PATTERN,
+)
+
 SOURCE_RULES = [(RE_GENERIC_URL, "generic url string")]
 INCLUDE_RULES = [(RE_INCLUDE_TAG, "explicit reference tag")]

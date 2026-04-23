@@ -25,13 +25,14 @@ class RouteGraph:
         stats = {
             "jsp_nodes": 0, "action_nodes": 0, "jump_edges": 0,
             "forward_edges": 0, "include_edges": 0, "inherited_edges": 0,
+            "constant_jumps": 0
         }
 
-        # 1. 预载所有扫描到的物理文件
-        all_files = set(scan_result.jump_map.keys()) | set(scan_result.include_map.keys())
+        # 1. 注册物理文件
+        all_files = set(scan_result.jump_map.keys()) | set(scan_result.include_map.keys()) | set(scan_result.mentions.keys())
         for f in all_files: self._register_node(f, is_jsp=True)
 
-        # 2. 建立显式/隐式引用边 (Include/Script)
+        # 2. 建立引用边
         for parent, children in scan_result.include_map.items():
             u = self._resolve_node(parent)
             for child in children:
@@ -39,14 +40,12 @@ class RouteGraph:
                 self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v))
                 stats["include_edges"] += 1
 
-        # 3. 建立源码跳转边 (JSP/JS -> Target)
+        # 3. 建立源码跳转
         for src, targets in scan_result.jump_map.items():
             u = self._resolve_node(src)
             for raw_target in targets:
-                # 判断目标是 Action 还是可能存在的内联 JSP
                 is_jsp = raw_target.lower().endswith(".jsp")
                 v = self._resolve_node(raw_target, is_jsp=is_jsp)
-                # 如果 src 是 JSP 且目标是 JS，视为 Include
                 if u.lower().endswith(".jsp") and v.lower().endswith(".js"):
                     self.g.add_edge(u, v, type=EDGE_INCLUDE, weight=self._calc_weight(u, v))
                     stats["include_edges"] += 1
@@ -54,7 +53,18 @@ class RouteGraph:
                     self.g.add_edge(u, v, type=EDGE_JUMP, weight=self._calc_weight(u, v))
                     stats["jump_edges"] += 1
 
-        # 4. 建立 XML Forward 边
+        # 4. 常量引用解析 (关键：将 NAME 替换为真正的路径)
+        for src, words in scan_result.mentions.items():
+            u = self._resolve_node(src)
+            for word in words:
+                if word in scan_result.constants:
+                    real_path = scan_result.constants[word]
+                    v = self._resolve_node(real_path, is_jsp=real_path.lower().endswith(".jsp"))
+                    if not self.g.has_edge(u, v):
+                        self.g.add_edge(u, v, type=EDGE_JUMP, weight=self._calc_weight(u, v), note=f"via const:{word}")
+                        stats["constant_jumps"] += 1
+
+        # 5. XML Forward
         for action, targets in xml_result.action_forwards.items():
             u = self._resolve_node(action, is_jsp=False)
             for target in targets:
@@ -62,7 +72,7 @@ class RouteGraph:
                 self.g.add_edge(u, v, type=EDGE_FORWARD, weight=self._calc_weight(u, v))
                 stats["forward_edges"] += 1
 
-        # 5. 全局 Forward
+        # 6. Global Forward
         for fwd, target in xml_result.global_forwards.items():
             u = self._resolve_node(f"/GlobalForward:{fwd}", is_jsp=False)
             v = self._resolve_node(target, is_jsp=True)
@@ -75,7 +85,6 @@ class RouteGraph:
         return stats
 
     def _calc_weight(self, u: str, v: str) -> int:
-        # 同目录权重 1，跨目录权重 10，Action 权重 2
         if self.is_action(u) or self.is_action(v): return 2
         u_dir = os.path.dirname(u)
         v_dir = os.path.dirname(v)
@@ -94,16 +103,12 @@ class RouteGraph:
         if p in self._jsp_nodes or p in self._action_nodes: return p
         lower_p = p.lower()
         if lower_p in self._case_map: return self._case_map[lower_p]
-        
         all_nodes = self._jsp_nodes | self._action_nodes
-        # 跨目录后缀对齐
         candidates = [n for n in all_nodes if n.endswith(p) or n.lower().endswith(lower_p)]
         if candidates: return min(candidates, key=len)
-        # 逆向对齐
         sorted_nodes = sorted(list(all_nodes), key=len, reverse=True)
         for node in sorted_nodes:
             if p.endswith(node) or lower_p.endswith(node.lower()): return node
-        
         return self._register_node(p, is_jsp=is_jsp)
 
     def _count_inheritances(self) -> int:

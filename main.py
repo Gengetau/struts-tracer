@@ -197,6 +197,7 @@ def _print_summary(stats: dict, config_paths: list) -> None:
     summary.add_row("[bold]Action 数[/]", str(stats.get("action_nodes", 0)))
     summary.add_row("[bold]JSP 节点[/]", str(stats.get("jsp_nodes", 0)))
     summary.add_row("[bold]Jump 边[/]", str(stats.get("jump_edges", 0)))
+    summary.add_row("[bold]常量跳转[/]", str(stats.get("constant_jumps", 0)))
     summary.add_row("[bold]Forward 边[/]", str(stats.get("forward_edges", 0)))
     summary.add_row("[bold]Include 边[/]", str(stats.get("include_edges", 0)))
     summary.add_row("[bold]继承边[/]", str(stats.get("inherited_edges", 0)))
