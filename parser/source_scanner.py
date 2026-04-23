@@ -1,6 +1,6 @@
 """
 source_scanner.py — 源码扫描
-核心逻辑：提取路径、Include 关系、以及路径常量的定义与引用。
+核心逻辑：提取路径、建立引用、识别路径常量。
 """
 
 from __future__ import annotations
@@ -13,10 +13,9 @@ class ScanResult:
     def __init__(self) -> None:
         self.jump_map: Dict[str, List[str]] = {}
         self.include_map: Dict[str, List[str]] = {}
-        # NAME -> REAL_PATH
-        self.constants: Dict[str, str] = {}
-        # FILE -> Set of potential constant identifiers used
-        self.mentions: Dict[str, Set[str]] = {}
+        self.constants: Dict[str, str] = {} # NAME -> PATH
+        self.mentions: Dict[str, Set[str]] = {} # FILE -> Words
+        self.defined_paths: Dict[str, Set[str]] = {} # FILE -> Set of literal paths defined here
         self.files_scanned: int = 0
         self.jump_relations: int = 0
         self.include_relations: int = 0
@@ -49,26 +48,26 @@ def _scan_file(file_path: str, project_dir: str, result: ScanResult) -> None:
     src_key = _to_project_path(file_path, project_dir)
     parent_dir = os.path.dirname(file_path)
 
-    # 1. 提取常量定义 (NAME = "/path")
-    # 记录哪些路径是被定义为常量的，这样我们可以从跳转图中排除掉定义者本身（防止它成为终点）
-    defined_paths_in_file = set()
+    # 1. 常量定义识别
+    local_defs = set()
     for m in RE_CONST_DEF.finditer(content):
         name = m.group(1)
-        raw_val = m.group(2)
-        norm_val = _normalize_path(raw_val, parent_dir, project_dir)
-        if norm_val:
-            result.constants[name] = norm_val
-            defined_paths_in_file.add(norm_val)
+        url = _normalize_path(m.group(2), parent_dir, project_dir)
+        if url:
+            result.constants[name] = url
+            local_defs.add(url)
+    if local_defs:
+        result.defined_paths[src_key] = local_defs
 
-    # 2. 跳转提取
+    # 2. 跳转提取 (仅提取那些不是在本文件中定义的路径)
     jumps: Set[str] = set()
     includes: Set[str] = set()
     for regex, _ in SOURCE_RULES:
         for m in regex.finditer(content):
             url = _normalize_path(m.group(1), parent_dir, project_dir)
             if not url or url == src_key: continue
-            # 过滤：如果是本文件定义的常量路径，不作为本文件的跳转出边（防止定义文件被误认为业务入口）
-            if url in defined_paths_in_file: continue
+            # 关键：如果一个路径在本文件中是被定义为常量的，我们不认为该文件“跳转”到了它
+            if url in local_defs: continue
             
             if src_key.lower().endswith(".jsp") and url.lower().endswith(".js"):
                 includes.add(url)
@@ -81,11 +80,10 @@ def _scan_file(file_path: str, project_dir: str, result: ScanResult) -> None:
             url = _normalize_path(m.group(1), parent_dir, project_dir)
             if url and url != src_key: includes.add(url)
 
-    # 4. 捕捉所有可能的标识符（用于常量匹配）
-    # 查找所有单词，后续在图构建时匹配 constants 字典
-    possible_identifiers = set(re.findall(r"\b[a-zA-Z_]\w*\b", content))
-    if possible_identifiers:
-        result.mentions[src_key] = possible_identifiers
+    # 4. 标识符提及
+    words = set(re.findall(r"\b[a-zA-Z_]\w*\b", content))
+    if words:
+        result.mentions[src_key] = words
 
     if jumps:
         result.jump_map[src_key] = list(jumps)
