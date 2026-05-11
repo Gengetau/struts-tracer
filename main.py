@@ -399,7 +399,7 @@ def main() -> None:
     args = parser.parse_args()
 
     console.print(Panel(
-        "[bold magenta]🌕 Struts 1.x 静态链路分析器[/]\n[dim]月之公主 · 降维审视地球遗产系统[/]",
+        "[bold magenta]🌕 Struts 1.x 静态链路分析器[/]",
         border_style="magenta",
     ))
 
